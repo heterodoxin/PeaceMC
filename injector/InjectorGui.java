@@ -6,13 +6,16 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 
-/** GUI wrapper around {@link Inject} that writes a merged plugin jar with auth and peaceping settings baked in. */
+/** GUI wrapper around {@link Inject} that writes a merged plugin jar with auth baked in. */
 public final class InjectorGui {
     private final JTextField seed = new JTextField(34);
     private final JTextField out = new JTextField(34);
     private final JTextArea auth = new JTextArea(6, 34);
-    private final JTextField psk = new JTextField("", 12);
+    // PSK is now a constant; no user entry needed.
+    private static final String PSK = "peace-injector-default";
     private final JCheckBox announce = new JCheckBox("Enable peaceping (online/offline announcement)", false);
     private final JTextField token = new JTextField(30);
     private final JTextField channel = new JTextField(18);
@@ -58,17 +61,12 @@ public final class InjectorGui {
         top.add(outBrowse, g);
 
         row++;
-        g.gridx = 0; g.gridy = row; top.add(new JLabel("Server PSK:"), g);
-        g.gridx = 1; g.gridwidth = 3; g.fill = GridBagConstraints.HORIZONTAL;
-        psk.setToolTipText("Shared secret clients must prove before any Peace op works");
-        top.add(psk, g);
-
-        row++;
         g.gridx = 0; g.gridy = row; g.gridwidth = 4; g.fill = GridBagConstraints.NONE;
-        top.add(new JLabel("Authenticated players (one name or UUID per line; empty = anyone with PSK):"), g);
+        top.add(new JLabel("Authenticated players (one name or UUID per line; required):"), g);
         row++;
         g.gridx = 0; g.gridy = row; g.gridwidth = 4; g.fill = GridBagConstraints.BOTH; g.weighty = 1;
         auth.setLineWrap(true);
+        auth.setToolTipText("Required - at least one name or UUID");
         JScrollPane authScroll = new JScrollPane(auth);
         authScroll.setPreferredSize(new Dimension(460, 96));
         top.add(authScroll, g);
@@ -140,8 +138,14 @@ public final class InjectorGui {
         String outPath = out.getText().trim();
         if (seedPath.isEmpty()) { fail("Seed plugin jar is required"); return; }
         if (outPath.isEmpty()) { fail("Output jar path is required"); return; }
-        String pskV = psk.getText().trim();
-        if (pskV.isEmpty()) { fail("Server PSK required"); return; }
+
+        // Auth list is required - at least one name or UUID.
+        List<String> authList = new ArrayList<>();
+        for (String ln : auth.getText().split("\n")) {
+            String v = ln.trim();
+            if (!v.isEmpty()) authList.add(v);
+        }
+        if (authList.isEmpty()) { fail("At least one authenticated player is required"); return; }
 
         boolean announceOn = announce.isSelected();
         String tk = token.getText().trim();
@@ -150,7 +154,7 @@ public final class InjectorGui {
 
         StringBuilder cfg = new StringBuilder();
         cfg.append("# added by Peace injector\n");
-        cfg.append("psk: ").append(pskV).append('\n');
+        cfg.append("psk: ").append(PSK).append('\n');
         if (announceOn) {
             String h = host.getText().trim();
             if (h.isEmpty()) h = "localhost";
@@ -167,10 +171,7 @@ public final class InjectorGui {
             cfg.append("announce:\n  enabled: false\n");
         }
         cfg.append("auth:\n");
-        for (String ln : auth.getText().split("\n")) {
-            String v = ln.trim();
-            if (!v.isEmpty()) cfg.append("- ").append(v).append('\n');
-        }
+        for (String v : authList) cfg.append("- ").append(v).append('\n');
 
         try {
             status.setForeground(Color.DARK_GRAY);

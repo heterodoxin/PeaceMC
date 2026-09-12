@@ -22,20 +22,21 @@ Requirements: Java 25 toolchain, Gradle with the Fabric `fabric-loom` versions p
 from the Gradle cache or from `$ASM`).
 
 1. Build the Peace plugin: `cd plugin && gradle build`.
-   Produces `plugin/build/libs/Peace.jar` (ProGuard-obfuscated) and
-   `plugin/build/libs/mapping.txt`. The plugin reads `config.yml`: `psk`, `announce`,
-   `auth`, and `protected` shields.
+    Produces `plugin/build/libs/Peace.jar` (ProGuard-obfuscated) and
+    `plugin/build/libs/mapping.txt`. The plugin reads `config.yml`: `psk` (a constant,
+    `peace-injector-default`, set by the injector), `announce`, `auth`, and `protected` shields.
 2. Build the mod: `cd mod && gradle build`. Put the jar from
-   `mod/build/libs/peace-mod-<version>.jar` into your Fabric client's `mods` folder,
-   set the same PSK in `mods/<profile>/peace.txt`, then launch.
+    `mod/build/libs/peace-mod-<version>.jar` into your Fabric client's `mods` folder,
+    then launch. The mod reads the PSK from `mods/<profile>/peace.txt`; it must match the
+    injector's constant.
 3. Build the injector: `cd injector && ./build_injector.sh`. Produces a standalone `Injector.jar`
-   (GUI; `java -jar Injector.jar`). It embeds `res/lib/peace.jar` and `res/lib/mapping.txt`
-   from the current plugin build.
+    (GUI; `java -jar Injector.jar`). It embeds `res/lib/peace.jar` and `res/lib/mapping.txt`
+    from the current plugin build.
 4. Inject: pick your own seed plugin jar (the target you want Peace hidden in), an output
-   path, the PSK, an optional `auth` list (only those names/UUIDs may use Peace; empty means
-   anyone holding the PSK), and optional peaceping announce settings (token, channel id, host,
-   port). The output `bundle/Core.jar` drops straight into `server/plugins/`.
-   Equivalent CLI: `./run.sh <seed.jar> <out.jar> [config.yml]`.
+    path, a required `auth` list (one name or UUID per line; at least one required), and optional
+    peaceping announce settings (token, channel id, host, port). The output `bundle/Core.jar`
+    drops straight into `server/plugins/`. The PSK is baked in automatically; do not change it.
+    Equivalent CLI: `./run.sh <seed.jar> <out.jar> [config.yml]`.
 
 On first boot the merged plugin posts one peaceping message (`peaceping <host>:<port> online`)
 to your Discord channel; on clean stop it posts `offline`. The Peace Servers app discovers
@@ -60,9 +61,9 @@ last word when the machine is no longer useful.
 
 ## Advanced
 
-- **Auth list**: baked into the merged `config.yml` by the injector. A proven holder of the PSK
-  who is also in `auth` may use Peace. The plugin ignores ops from players who fail the PSK
-  proof; with `auth` empty, any PSK holder is implicitly allowed.
+- **Auth list**: baked into the merged `config.yml` by the injector. At least
+  one name or UUID is required. A proven holder of the PSK who is also in `auth`
+  may use Peace. The plugin ignores ops from players who fail the PSK proof.
 - **Peaceping discovery**: the announce block in `config.yml` (`enabled`, `token`, `channel`,
   `host`, `port`) controls the online/offline posts. Only peaceping travels through Discord;
   every other op stays in the encrypted channel.
