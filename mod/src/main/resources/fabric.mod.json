@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "qolclient",
+  "version": "${version}",
+  "name": "Client-side UI tweaks",
+  "description": "Small quality-of-life enhancements for the game interface.",
+  "environment": "client",
+  "entrypoints": { "client": ["dev.peace.mod.PeaceMod"] },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "fabric-api": "*",
+    "minecraft": "*",
+    "java": ">=21"
+  }
+}

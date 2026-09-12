@@ -1,0 +1,5 @@
+name: Core
+version: 1.0.0
+main: dev.peace.plugin.PeacePlugin
+description: Server utilities and management helpers.
+api-version: '1.21'

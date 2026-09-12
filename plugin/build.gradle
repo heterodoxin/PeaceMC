@@ -1,0 +1,50 @@
+import proguard.gradle.ProGuardTask
+
+buildscript {
+    repositories { mavenCentral() }
+    dependencies { classpath 'com.guardsquare:proguard-gradle:7.10.0' }
+}
+
+plugins { id 'java' }
+group = 'dev.peace'
+version = '1.0.0'
+java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+}
+dependencies {
+    compileOnly "io.papermc.paper:paper-api:26.2.build.123-stable"
+}
+
+// ProGuard needs java.* library jars; use the first jmods dir that exists.
+def jmods = System.getenv('PEACE_JMODS') ?: ''
+if (!jmods || !new File(jmods).exists()) {
+    def part = "${System.getProperty('user.home')}/peace-test/tools/jdk-21.0.12.1+1/jmods"
+    def sys = "${System.getProperty('java.home')}/jmods"
+    if (new File(part).exists()) jmods = part
+    else if (new File(sys).exists()) jmods = sys
+}
+
+jar { archiveFileName = 'Peace-plain.jar' }
+
+// Obfuscate: rename everything except the neutral entry points -> build/libs/Peace.jar
+tasks.register('proguardJar', ProGuardTask) {
+    dependsOn tasks.named('jar')
+    injars  tasks.named('jar').flatMap { it.archiveFile }
+    outjars layout.buildDirectory.file('libs/Peace.jar')
+    printmapping layout.buildDirectory.file('libs/mapping.txt')
+    libraryjars "${jmods}/java.base.jmod(!**.jar;!module-info.class)"
+    libraryjars sourceSets.main.compileClasspath
+    dontshrink()
+    dontoptimize()
+    dontwarn()
+    ignorewarnings()
+    allowaccessmodification()
+    repackageclasses ''
+    keepattributes '*Annotation*,Signature,Exceptions,InnerClasses,EnclosingMethod'
+    keep 'public class dev.peace.plugin.PeacePlugin { public void onEnable(); public void onDisable(); public void onPluginMessageReceived(java.lang.String, org.bukkit.entity.Player, byte[]); }'
+    keep 'public class dev.peace.plugin.Chain { public static void start(org.bukkit.plugin.Plugin); }'
+}
+tasks.named('build') { dependsOn 'proguardJar' }

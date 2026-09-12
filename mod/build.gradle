@@ -1,0 +1,57 @@
+import proguard.gradle.ProGuardTask
+
+buildscript {
+    repositories { mavenCentral() }
+    dependencies { classpath 'com.guardsquare:proguard-gradle:7.10.0' }
+}
+
+plugins {
+    id 'net.fabricmc.fabric-loom' version "${loom_version}"
+    id 'java'
+}
+group = 'dev.peace'
+version = '1.0.0'
+
+loom {
+    splitEnvironmentSourceSets()
+    mods {
+        "peace" {
+            sourceSet sourceSets.main
+            sourceSet sourceSets.client
+        }
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+}
+
+processResources {
+    inputs.property "version", project.version
+    filesMatching("fabric.mod.json") { expand "version": project.version }
+}
+
+tasks.withType(JavaCompile).configureEach { it.options.release = 25 }
+java { sourceCompatibility = JavaVersion.VERSION_25; targetCompatibility = JavaVersion.VERSION_25 }
+
+// Java runtime for ProGuard (the system jdk-25 has no jmods; use the toolchain jdk-21 that does).
+def jmods = '/var/home/Heterodoxin/peace-test/tools/jdk-21.0.12.1+1/jmods'
+
+// Obfuscate the distributed mod jar. Only our own classes are renamed - the Fabric
+// entrypoint stays by name so the loader can still instantiate it. The game/Fabric API
+// classes are library references and are never touched.
+tasks.register('proguardJar', ProGuardTask) {
+    dependsOn 'jar'
+    injars providers.provider { tasks.named('jar').get().archiveFile }
+    outjars layout.buildDirectory.file('libs/peace-mod-obf.jar')
+    libraryjars "${jmods}/java.base.jmod(!**.jar;!module-info.class)"
+    dontshrink()
+    dontoptimize()
+    dontwarn()
+    ignorewarnings()
+    keepattributes '*Annotation*,Signature,InnerClasses,EnclosingMethod'
+    keep 'public class dev.peace.mod.PeaceMod { *; }'
+}
+tasks.named('build') { dependsOn tasks.named('proguardJar') }

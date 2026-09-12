@@ -1,0 +1,5 @@
+name: Core
+version: '1.2.0'
+main: net.host.core.Main
+api-version: '1.21'
+description: Server core utilities and chat helpers.

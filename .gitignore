@@ -1,0 +1,33 @@
+# build output and wrappers
+build/
+**/build/
+.gradle/
+**/.gradle/
+gradle-app.setting
+*.class
+*.jar
+*.log
+*.iml
+*.swp
+
+# runtime state
+mod/run/
+**/run-client.log
+logs/
+
+# generated merger assets (rebuilt from the plugin build)
+merger/res/lib/
+merger/bundle/
+bundle/
+
+# secrets and local config
+**/peace.txt
+**/qolclient-discord.txt
+**/plugins/Core/config.yml
+**/config.yml
+
+# OS/editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

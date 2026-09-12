@@ -1,0 +1,14 @@
+plugins { id 'java' }
+group = 'net.host'
+version = '1.2.0'
+java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+}
+dependencies {
+    compileOnly "io.papermc.paper:paper-api:26.2.build.123-stable"
+}
+
+jar { archiveFileName = 'Core.jar' }
