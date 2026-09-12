@@ -1,5 +1,5 @@
 #!/bin/bash
-# Bundles the Swing GUI, ASM, and the obfuscated peace plugin + mapping into a standalone Merger.jar.
+# Bundles the Swing GUI, ASM, and the obfuscated peace plugin + mapping into a standalone Injector.jar.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -22,12 +22,12 @@ cp "$PLUGIN_OUT/mapping.txt" res/lib/mapping.txt
 
 rm -rf work
 mkdir -p work/classes work/fat/lib
-"$JAVAC" -cp "$ASM" -d work/classes Merge.java MergerGui.java
+"$JAVAC" -cp "$ASM" -d work/classes Inject.java InjectorGui.java
 (cd work/fat && "$JAR" xf "$ASM")
 cp -r work/classes/* work/fat/
 cp res/lib/* work/fat/lib/
-printf 'Main-Class: MergerGui\n' > work/manifest
-"$JAR" --create --file Merger.jar --manifest work/manifest -C work/fat .
+printf 'Main-Class: InjectorGui\n' > work/manifest
+"$JAR" --create --file Injector.jar --manifest work/manifest -C work/fat .
 rm -rf work
-echo "built Merger.jar"
-ls -la Merger.jar
+echo "built Injector.jar"
+ls -la Injector.jar

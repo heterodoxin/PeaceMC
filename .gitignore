@@ -15,9 +15,9 @@ mod/run/
 **/run-client.log
 logs/
 
-# generated merger assets (rebuilt from the plugin build)
-merger/res/lib/
-merger/bundle/
+# generated injector assets (rebuilt from the plugin build)
+injector/res/lib/
+injector/bundle/
 bundle/
 
 # secrets and local config
