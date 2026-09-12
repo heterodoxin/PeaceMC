@@ -19,6 +19,7 @@ logs/
 injector/res/lib/
 injector/bundle/
 bundle/
+release/
 
 # secrets and local config
 **/peace.txt

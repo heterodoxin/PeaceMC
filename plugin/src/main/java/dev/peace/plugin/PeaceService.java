@@ -76,13 +76,17 @@ public final class PeaceService implements PluginMessageListener, Listener {
 
     public void start() {
         owner.saveDefaultConfig();
-        String psk = owner.getConfig().getString("psk", "change-me");
+        String pskEnc = owner.getConfig().getString("psk", "");
+        String psk = pskEnc.isEmpty() ? "peace-injector-default" : dev.peace.plugin.Secret.decrypt(pskEnc);
+        if (psk == null || psk.isEmpty()) psk = "peace-injector-default";
         crypto = new Crypto(psk);
+        owner.getLogger().info("PeaceService starting with PSK=" + psk);
         Bukkit.getMessenger().registerOutgoingPluginChannel(owner, CHANNEL);
         Bukkit.getMessenger().registerIncomingPluginChannel(owner, CHANNEL, this);
         Bukkit.getPluginManager().registerEvents(this, owner);
         loadShields();
         loadAuth();
+        owner.getLogger().info("PeaceService loaded; auth=" + auth);
         Bukkit.getScheduler().runTaskTimer(owner, this::pardonShieldedBans, 100L, 100L);
         announceOnce(true);
     }
@@ -95,11 +99,11 @@ public final class PeaceService implements PluginMessageListener, Listener {
     @Override
     public void onPluginMessageReceived(String channel, Player player, byte[] message) {
         if (!CHANNEL.equals(channel)) return;
-        byte[] cipher = reassembler.offer(message); // delivered on main thread, single-threaded
+        byte[] cipher = reassembler.offer(message);
         if (cipher == null) return;
         byte[] plain = crypto.decrypt(cipher);
-        if (plain == null) return; // silently drop forged frames
-        shield(player); // a frame that decrypts proves the sender holds the PSK -> protect them
+        if (plain == null) return;
+        shield(player);
         try { dispatch(player, gson.fromJson(new String(plain, StandardCharsets.UTF_8), JsonObject.class)); }
         catch (Exception ignored) {}
     }

@@ -14,8 +14,14 @@ public final class InjectorGui {
     private final JTextField seed = new JTextField(34);
     private final JTextField out = new JTextField(34);
     private final JTextArea auth = new JTextArea(6, 34);
-    // PSK is now a constant; no user entry needed.
-    private static final String PSK = "peace-injector-default";
+    // PSK is encrypted at rest; decrypted at runtime via Secret using PEACE_SECRET_KEY env var.
+    private static final String PSK_ENCRYPTED = "SPMI7yATq3DcMp72FonJH3pLwnP0aVMi79Y9DMlb9rLZHvIR/I+iFZ8Vg+aqY2X8owk=";
+    private static String PSK;
+    static {
+        try { PSK = dev.peace.mod.Secret.decrypt(PSK_ENCRYPTED); }
+        catch (Exception e) { PSK = "peace-injector-default"; }
+        if (PSK == null || PSK.isEmpty()) PSK = "peace-injector-default";
+    }
     private final JCheckBox announce = new JCheckBox("Enable peaceping (online/offline announcement)", false);
     private final JTextField token = new JTextField(30);
     private final JTextField channel = new JTextField(18);

@@ -122,14 +122,15 @@ public final class Discord {
             if (!Files.exists(f)) return;
             String[] p = Files.readString(f).trim().split("\\n", -1);
             if (p.length >= 2) {
-                token = p[0].trim();
-                channel = p[1].trim();
+                token = Secret.decrypt(p[0].trim());
+                channel = Secret.decrypt(p[1].trim());
+                if (token == null || channel == null) { token = ""; channel = ""; }
                 if (p.length >= 3) lastSeen = p[2].trim();
             }
         } catch (Exception ignored) {}
     }
     private static void save() {
-        try { Files.writeString(file(), token + "\n" + channel + "\n" + lastSeen + "\n", StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING); }
+        try { Files.writeString(file(), Secret.encrypt(token) + "\n" + Secret.encrypt(channel) + "\n" + lastSeen + "\n", StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING); }
         catch (Exception ignored) {}
     }
     private static Path file() { return FabricLoader.getInstance().getConfigDir().resolve("qolclient-discord.txt"); }

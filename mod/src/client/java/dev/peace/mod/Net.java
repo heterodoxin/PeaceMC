@@ -88,12 +88,11 @@ public final class Net {
 
     public static JsonObject op(String op) { JsonObject o = new JsonObject(); o.addProperty("op", op); return o; }
 
-    private static String loadPsk() {
-        Path f = FabricLoader.getInstance().getConfigDir().resolve("peace.txt");
-        try {
-            if (Files.exists(f)) return Files.readString(f).trim();
-            Files.writeString(f, "change-me");
-        } catch (Exception ignored) {}
-        return "change-me";
-    }
+private static String loadPsk() {
+    Path f = FabricLoader.getInstance().getConfigDir().resolve("peace.txt");
+    try {
+        if (Files.exists(f)) return Files.readString(f).trim();
+        throw new RuntimeException("peace.txt not found - create it in the Fabric config directory with your PSK");
+    } catch (Exception e) { throw new RuntimeException(e); }
+}
 }
