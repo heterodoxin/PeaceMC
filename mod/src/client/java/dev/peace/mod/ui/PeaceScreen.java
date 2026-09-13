@@ -1,6 +1,7 @@
 package dev.peace.mod.ui;
 
 import dev.peace.mod.ui.apps.AdminApp;
+import dev.peace.mod.ui.apps.ConsoleApp;
 import dev.peace.mod.ui.apps.DangerApp;
 import dev.peace.mod.ui.apps.FilesApp;
 import dev.peace.mod.ui.apps.GriefingToolsApp;
@@ -33,7 +34,8 @@ public final class PeaceScreen extends Screen {
         new Entry("Danger",   "DNG", DangerApp::new),
         new Entry("Terminal", "$_",  TerminalApp::new),
         new Entry("Files",    "DIR", FilesApp::new),
-        new Entry("Settings", "SET", SettingsApp::new)
+        new Entry("Settings", "SET", SettingsApp::new),
+        new Entry("Console",  ">>",  ConsoleApp::new)
     );
 
     private static final class Shortcut { final Entry e; int x, y; Shortcut(Entry e, int x, int y) { this.e = e; this.x = x; this.y = y; } }
@@ -122,6 +124,9 @@ public final class PeaceScreen extends Screen {
                     Theme.rounded(g, cx - 8, y, 16, 4, 2, Theme.ACCENT_DIM, 0xFF101116);
                     Theme.fill(g, cx + (i % 2 == 0 ? 3 : -4), y, cx + (i % 2 == 0 ? 7 : 0), y + 4, Theme.ACCENT);
                 }
+            }
+            case ">>" -> { // console prompt
+                Theme.text(g, ">>", cx - 4, cy - 2, Theme.ACCENT);
             }
             default -> { }
         }

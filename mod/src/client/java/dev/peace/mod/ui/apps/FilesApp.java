@@ -162,7 +162,7 @@ public final class FilesApp extends App {
                 ctxOpen = false;
             }
         }
-        if (btn == 2 && mx >= listX && mx < listX + listW && my >= listY && my < listY + listH) {
+        if (btn == 1 && mx >= listX && mx < listX + listW && my >= listY && my < listY + listH) {
             int idx = (int) ((my - listY - 2 + rowScroll) / ROW) - 1;
             if (idx >= 0 && idx < nodes.size()) {
                 selected = idx; ctxIndex = idx; ctxX = (int) mx; ctxY = (int) my; ctxOpen = true;
@@ -179,7 +179,7 @@ public final class FilesApp extends App {
             idx -= 1;
             if (idx >= 0 && idx < nodes.size()) {
                 Node n = nodes.get(idx);
-                if (btn == 1) {
+                if (btn == 0) {
                     if (n.dir) navigate(n.path); else openFile(n.path);
                 } else {
                     selected = idx;

