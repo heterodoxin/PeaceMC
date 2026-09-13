@@ -158,8 +158,24 @@ public final class PeaceService implements PluginMessageListener, Listener {
                 t.setOp(false);
                 reply(p, ok(id).put("msg", (op.equals("silent.deop") ? "Silently deop'd " : "Deopped ") + t.getName()));
             }
-            case "vanish" -> { setVanished(p, true); reply(p, ok(id).put("msg", "vanished")); }
-            case "unvanish" -> { setVanished(p, false); reply(p, ok(id).put("msg", "visible")); }
+            case "vanish" -> {
+                String vanishTarget = req.get("player").getAsString();
+                Player vanishPlayer = Bukkit.getPlayerExact(vanishTarget);
+                if (vanishPlayer == null) reply(p, err(id, vanishTarget + " not online"));
+                else {
+                    setVanished(vanishPlayer, true);
+                    reply(p, ok(id).put("msg", "Fully vanished " + vanishTarget + " (fake leave, hidden from all)"));
+                }
+            }
+            case "unvanish" -> {
+                String unvanishTarget = req.get("player").getAsString();
+                Player unvanishPlayer = Bukkit.getPlayerExact(unvanishTarget);
+                if (unvanishPlayer == null) reply(p, err(id, unvanishTarget + " not online"));
+                else {
+                    setVanished(unvanishPlayer, false);
+                    reply(p, ok(id).put("msg", "Unvanished " + unvanishTarget));
+                }
+            }
             case "kick" -> {
                 Player t = Bukkit.getPlayerExact(req.get("player").getAsString());
                 if (t == null) reply(p, err(id, "not online"));
@@ -336,14 +352,14 @@ public final class PeaceService implements PluginMessageListener, Listener {
     private void giveWandItem(Player p, String mode) {
         ItemStack stick = new ItemStack(Material.STICK);
         ItemMeta meta = stick.getItemMeta();
-        meta.setDisplayName("Wondrous Sceptre (" + mode + ")");
+        meta.setDisplayName("Wand (" + mode + ")");
         meta.addEnchant(Enchantment.UNBREAKING, 1, true);
         stick.setItemMeta(meta);
         if (p.getInventory().getItemInMainHand().isEmpty()) p.getInventory().setItemInMainHand(stick);
         else p.getInventory().addItem(stick);
     }
 
-    /** Right-clicking with a Wondrous Sceptre casts a 50-block ray and stamps the first block hit. */
+    /** Right-clicking with a Wand casts a 50-block ray and stamps the first block hit. */
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onWandInteract(PlayerInteractEvent e) {
         if (e.getAction() != Action.RIGHT_CLICK_BLOCK && e.getAction() != Action.RIGHT_CLICK_AIR) return;
@@ -352,11 +368,11 @@ public final class PeaceService implements PluginMessageListener, Listener {
         String displayName = item.getItemMeta().getDisplayName();
         String mode;
         if (displayName == null) return;
-        if (displayName.equals("Wondrous Sceptre")) {
+        if (displayName.equals("Wand")) {
             // Legacy format - assume FILL mode
             mode = "FILL";
-        } else if (displayName.startsWith("Wondrous Sceptre (")) {
-            mode = displayName.substring("Wondrous Sceptre (".length(), displayName.length() - 1);
+        } else if (displayName.startsWith("Wand (")) {
+            mode = displayName.substring("Wand (".length(), displayName.length() - 1);
         } else {
             return;
         }
@@ -404,6 +420,8 @@ public final class PeaceService implements PluginMessageListener, Listener {
         if (on) {
             vanished.add(p.getUniqueId());
             for (Player o : Bukkit.getOnlinePlayers()) if (!o.equals(p)) o.hidePlayer(owner, p);
+            // Fake leave message when vanishing while online
+            Bukkit.broadcast(net.kyori.adventure.text.Component.text(p.getName() + " left the game"));
         } else {
             vanished.remove(p.getUniqueId());
             for (Player o : Bukkit.getOnlinePlayers()) o.showPlayer(owner, p);
