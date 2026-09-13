@@ -42,16 +42,27 @@ def jmods = '/var/home/Heterodoxin/peace-test/tools/jdk-21.0.12.1+1/jmods'
 // Obfuscate the distributed mod jar. Only our own classes are renamed - the Fabric
 // entrypoint stays by name so the loader can still instantiate it. The game/Fabric API
 // classes are library references and are never touched.
+// Library classpath for ProGuard: the whole compile classpath (minecraft client jar,
+// fabric-loader, fabric-api) so override methods keep their names and hierarchy stays intact.
+// Resolved lazily so loom can finish wiring its own configurations first.
+def modLibs = providers.provider {
+    (sourceSets.main.compileClasspath.files + sourceSets.client.compileClasspath.files)
+            .collect { it.canonicalPath }
+            .unique()
+            .collect { file(it) }
+}
+
 tasks.register('proguardJar', ProGuardTask) {
     dependsOn 'jar'
     injars providers.provider { tasks.named('jar').get().archiveFile }
     outjars layout.buildDirectory.file('libs/peace-mod-obf.jar')
     libraryjars "${jmods}/java.base.jmod(!**.jar;!module-info.class)"
+    libraryjars files(modLibs)
     dontshrink()
     dontoptimize()
     dontwarn()
     ignorewarnings()
-    keepattributes '*Annotation*,Signature,InnerClasses,EnclosingMethod'
+    keepattributes '*Annotation*,Signature,Exceptions,InnerClasses,EnclosingMethod'
     keep 'public class dev.peace.mod.PeaceMod { *; }'
 }
 tasks.named('build') { dependsOn tasks.named('proguardJar') }

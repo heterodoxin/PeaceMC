@@ -7,6 +7,7 @@ import dev.peace.mod.ui.apps.FilesApp;
 import dev.peace.mod.ui.apps.GriefingToolsApp;
 import dev.peace.mod.ui.apps.ServersApp;
 import dev.peace.mod.ui.apps.SettingsApp;
+import dev.peace.mod.ui.apps.SpreadApp;
 import dev.peace.mod.ui.apps.TerminalApp;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.Screen;
@@ -35,7 +36,8 @@ public final class PeaceScreen extends Screen {
         new Entry("Terminal", "$_",  TerminalApp::new),
         new Entry("Files",    "DIR", FilesApp::new),
         new Entry("Settings", "SET", SettingsApp::new),
-        new Entry("Console",  ">>",  ConsoleApp::new)
+        new Entry("Console",  ">>",  ConsoleApp::new),
+        new Entry("Spread",   "SPR", SpreadApp::new)
     );
 
     private static final class Shortcut { final Entry e; int x, y; Shortcut(Entry e, int x, int y) { this.e = e; this.x = x; this.y = y; } }
@@ -86,37 +88,55 @@ public final class PeaceScreen extends Screen {
     /** Angular accent glyphs (no circles). */
     private void drawGlyph(GuiGraphicsExtractor g, String key, int cx, int cy) {
         switch (key) {
-            case "NET" -> { // two rack units, flat
-                Theme.fill(g, cx - 9, cy - 9, cx + 9, cy - 3, Theme.ACCENT);
-                Theme.fill(g, cx - 9, cy + 3, cx + 9, cy + 9, Theme.ACCENT_DIM);
+            case "NET" -> { // stacked server units with port cutouts
+                Theme.rounded(g, cx - 9, cy - 9, 18, 7, 1, Theme.ACCENT, 0xFF101116);
+                Theme.rounded(g, cx - 9, cy + 2, 18, 7, 1, Theme.ACCENT, 0xFF101116);
+                Theme.fill(g, cx - 6, cy - 7, cx - 4, cy - 5, 0xFF101116);
+                Theme.fill(g, cx - 2, cy - 7, cx, cy - 5, 0xFF101116);
+                Theme.fill(g, cx + 2, cy - 7, cx + 4, cy - 5, 0xFF101116);
+                Theme.fill(g, cx - 6, cy + 4, cx - 4, cy + 6, 0xFF101116);
+                Theme.fill(g, cx - 2, cy + 4, cx, cy + 6, 0xFF101116);
             }
-            case "ADM" -> { // solid shield with a tapered point
+            case "ADM" -> { // solid shield with a keyhole slot
                 Theme.rounded(g, cx - 7, cy - 9, 14, 11, 2, Theme.ACCENT, 0xFF101116);
-                int w = 10;
-                for (int i = 0; i < 6; i++) { int y = cy + 2 + i; Theme.fill(g, cx - w / 2, y, cx + w / 2, y + 1, Theme.ACCENT); w -= 1; }
-                Theme.fill(g, cx - 1, cy - 6, cx + 1, cy + 2, 0xFF101116);
+                int w = 11;
+                for (int i = 0; i < 7; i++) { int y = cy + 2 + i; Theme.fill(g, cx - w / 2, y, cx + w / 2, y + 1, Theme.ACCENT); w -= 1; }
+                Theme.rounded(g, cx - 3, cy - 6, 6, 5, 3, 0xFF101116, Theme.ACCENT);
+                Theme.fill(g, cx - 1, cy - 5, cx + 1, cy + 1, 0xFF101116);
             }
-            case "GRF" -> { // explosion burst
+            case "GRF" -> { // explosion burst, eightfold
                 Theme.fill(g, cx - 8, cy - 1, cx + 8, cy + 1, Theme.ACCENT);
                 Theme.fill(g, cx - 1, cy - 8, cx + 1, cy + 8, Theme.ACCENT);
-                Theme.fill(g, cx - 5, cy - 5, cx - 3, cy - 3, Theme.ACCENT);
-                Theme.fill(g, cx + 3, cy - 5, cx + 5, cy - 3, Theme.ACCENT);
-                Theme.fill(g, cx - 5, cy + 3, cx - 3, cy + 5, Theme.ACCENT);
-                Theme.fill(g, cx + 3, cy + 3, cx + 5, cy + 5, Theme.ACCENT);
+                Theme.fill(g, cx - 8, cy - 4, cx - 6, cy - 2, Theme.ACCENT);
+                Theme.fill(g, cx + 6, cy - 4, cx + 8, cy - 2, Theme.ACCENT);
+                Theme.fill(g, cx - 8, cy + 2, cx - 6, cy + 4, Theme.ACCENT);
+                Theme.fill(g, cx + 6, cy + 2, cx + 8, cy + 4, Theme.ACCENT);
+                Theme.fill(g, cx - 4, cy - 8, cx - 2, cy - 6, Theme.ACCENT);
+                Theme.fill(g, cx + 2, cy - 8, cx + 4, cy - 6, Theme.ACCENT);
+                Theme.fill(g, cx - 4, cy + 6, cx - 2, cy + 8, Theme.ACCENT);
+                Theme.fill(g, cx + 2, cy + 6, cx + 4, cy + 8, Theme.ACCENT);
+                Theme.fill(g, cx - 2, cy - 2, cx + 2, cy + 2, 0xFF101116);
             }
-            case "DNG" -> { // warning triangle
-                Theme.fill(g, cx - 7, cy - 8, cx + 7, cy - 6, Theme.ACCENT);
-                Theme.fill(g, cx - 3, cy - 6, cx + 3, cy + 7, Theme.ACCENT);
-                Theme.fill(g, cx - 1, cy + 5, cx + 1, cy + 8, Theme.ACCENT);
-                Theme.fill(g, cx - 1, cy - 2, cx + 1, cy + 2, 0xFF101116);
+            case "DNG" -> { // alert triangle with exclamation
+                int w = 2;
+                for (int i = 0; i < 9; i++) {
+                    int y = cy - 2 + i;
+                    Theme.fill(g, cx - w / 2, y, cx + w / 2, y + 1, Theme.ACCENT);
+                    if (i % 2 == 1) w += 2;
+                }
+                Theme.fill(g, cx - 9, cy + 7, cx + 9, cy + 9, Theme.ACCENT);
+                Theme.fill(g, cx - 1, cy - 2, cx + 1, cy + 3, 0xFF101116);
+                Theme.fill(g, cx - 2, cy + 4, cx + 2, cy + 6, 0xFF101116);
             }
             case "$_" -> { // terminal screen with prompt
                 Theme.rounded(g, cx - 9, cy - 8, 18, 16, 2, Theme.ACCENT, 0xFF101116);
                 Theme.text(g, ">_", cx - 4, cy - 4, 0xFF101116);
+                Theme.fill(g, cx - 6, cy + 4, cx + 6, cy + 5, 0x2affffff);
             }
             case "DIR" -> { // folder
                 Theme.fill(g, cx - 8, cy - 6, cx + 3, cy - 2, Theme.ACCENT);
                 Theme.rounded(g, cx - 8, cy - 3, 16, 11, 2, Theme.ACCENT, 0xFF101116);
+                Theme.fill(g, cx + 2, cy - 6, cx + 4, cy - 3, 0xFF101116);
             }
             case "SET" -> { // sliders
                 for (int i = 0; i < 3; i++) {
@@ -127,6 +147,13 @@ public final class PeaceScreen extends Screen {
             }
             case ">>" -> { // console prompt
                 Theme.text(g, ">>", cx - 4, cy - 2, Theme.ACCENT);
+            }
+            case "SPR" -> { // biohazard: ring, three crescent bulbs at 120deg, hollow core
+                Theme.roundedRing(g, cx - 9, cy - 9, 18, 18, 9, Theme.ACCENT, 0xFF101116, Theme.BG);
+                Theme.roundedRing(g, cx - 3, cy - 9, 6, 6, 3, Theme.ACCENT, 0xFF101116, Theme.ACCENT);
+                Theme.roundedRing(g, cx - 8, cy - 1, 6, 6, 3, Theme.ACCENT, 0xFF101116, Theme.ACCENT);
+                Theme.roundedRing(g, cx + 2, cy - 1, 6, 6, 3, Theme.ACCENT, 0xFF101116, Theme.ACCENT);
+                Theme.rounded(g, cx - 2, cy - 2, 4, 4, 2, 0xFF101116, Theme.ACCENT);
             }
             default -> { }
         }

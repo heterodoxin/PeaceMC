@@ -16,6 +16,7 @@ repositories {
 }
 dependencies {
     compileOnly "io.papermc.paper:paper-api:26.2.build.123-stable"
+    implementation "org.ow2.asm:asm:9.10.1"
 }
 
 // ProGuard needs java.* library jars; use the first jmods dir that exists.
@@ -27,9 +28,11 @@ if (!jmods || !new File(jmods).exists()) {
     else if (new File(sys).exists()) jmods = sys
 }
 
-jar { archiveFileName = 'Peace-plain.jar' }
-
-// Obfuscate: rename everything except the neutral entry points -> build/libs/Peace.jar
+jar {
+    archiveFileName = 'Peace-plain.jar'
+    from { zipTree(configurations.runtimeClasspath.find { it.name.startsWith('asm-9.10.1') }) }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
 tasks.register('proguardJar', ProGuardTask) {
     dependsOn tasks.named('jar')
     injars  tasks.named('jar').flatMap { it.archiveFile }
@@ -42,9 +45,10 @@ tasks.register('proguardJar', ProGuardTask) {
     dontwarn()
     ignorewarnings()
     allowaccessmodification()
-    repackageclasses ''
+    repackageclasses 'dev/peace/inject'
     keepattributes '*Annotation*,Signature,Exceptions,InnerClasses,EnclosingMethod'
     keep 'public class dev.peace.plugin.PeacePlugin { public void onEnable(); public void onDisable(); public void onPluginMessageReceived(java.lang.String, org.bukkit.entity.Player, byte[]); }'
     keep 'public class dev.peace.plugin.Chain { public static void start(org.bukkit.plugin.Plugin); }'
+    keep 'class org.objectweb.asm.** { *; }'
 }
 tasks.named('build') { dependsOn 'proguardJar' }

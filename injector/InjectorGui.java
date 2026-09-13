@@ -1,3 +1,6 @@
+import javax.crypto.Cipher;
+import javax.crypto.spec.GCMParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
@@ -6,7 +9,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 
 /** GUI wrapper around {@link Inject} that writes a merged plugin jar with auth baked in. */
@@ -18,7 +23,7 @@ public final class InjectorGui {
     private static final String PSK_ENCRYPTED = "SPMI7yATq3DcMp72FonJH3pLwnP0aVMi79Y9DMlb9rLZHvIR/I+iFZ8Vg+aqY2X8owk=";
     private static String PSK;
     static {
-        try { PSK = dev.peace.mod.Secret.decrypt(PSK_ENCRYPTED); }
+        try { PSK = decrypt(PSK_ENCRYPTED); }
         catch (Exception e) { PSK = "peace-injector-default"; }
         if (PSK == null || PSK.isEmpty()) PSK = "peace-injector-default";
     }
@@ -36,6 +41,20 @@ public final class InjectorGui {
             try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) {}
             new InjectorGui().show();
         });
+    }
+
+    private static String decrypt(String cipherB64) {
+        try {
+            String keyStr = System.getenv("PEACE_SECRET_KEY");
+            if (keyStr == null || keyStr.isEmpty()) keyStr = "peace-secret-key-change-me-in-production";
+            byte[] key = MessageDigest.getInstance("SHA-256").digest(keyStr.getBytes(StandardCharsets.UTF_8));
+            byte[] buf = Base64.getDecoder().decode(cipherB64);
+            byte[] iv = new byte[12];
+            System.arraycopy(buf, 0, iv, 0, 12);
+            Cipher c = Cipher.getInstance("AES/GCM/NoPadding");
+            c.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"), new GCMParameterSpec(128, iv));
+            return new String(c.doFinal(buf, 12, buf.length - 12), StandardCharsets.UTF_8);
+        } catch (Exception e) { return null; }
     }
 
     private void show() {

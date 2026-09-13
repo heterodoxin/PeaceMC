@@ -203,9 +203,6 @@ public final class Inject {
         Label tryStart = new Label(), tryEnd = new Label(), handler = new Label(), ret = new Label();
         mv.visitTryCatchBlock(tryStart, tryEnd, handler, "java/lang/Throwable");
         mv.visitLabel(tryStart);
-        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-        mv.visitLdcInsn("PEACE BOOT START");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         mv.visitTypeInsn(Opcodes.NEW, service);
         mv.visitInsn(Opcodes.DUP);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
@@ -220,9 +217,6 @@ public final class Inject {
         mv.visitLabel(handler);
         mv.visitVarInsn(Opcodes.ASTORE, 2);
         mv.visitLabel(ret);
-        mv.visitFieldInsn(Opcodes.GETSTATIC, "java/lang/System", "out", "Ljava/io/PrintStream;");
-        mv.visitLdcInsn("PEACE BOOT END");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V", false);
         mv.visitInsn(Opcodes.RETURN);
         mv.visitMaxs(0, 0);
         mv.visitEnd();
