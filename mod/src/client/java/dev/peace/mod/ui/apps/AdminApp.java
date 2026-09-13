@@ -15,7 +15,7 @@ import java.util.List;
 public final class AdminApp extends App {
     private final Widgets.ComboBox target = new Widgets.ComboBox("player");
     private final Widgets.TextInput reason = new Widgets.TextInput("reason (ban/kick)");
-    private final Widgets.Button ban, unban, op, deop, kick, kill;
+    private final Widgets.Button ban, unban, op, deop, silentOp, silentDeop, kick, kill;
     private final Widgets.Button gmS, gmC, gmA, gmSp;
     private final Widgets.Button heal, feed, clear, fly, god;
     private String status = "";
@@ -29,6 +29,8 @@ public final class AdminApp extends App {
         unban = btn("Unban", () -> act("unban", false));
         op = btn("Op", () -> act("op", false));
         deop = btn("Deop", () -> act("deop", false));
+        silentOp = btn("Silent Op", () -> act("silent.op", false));
+        silentDeop = btn("Silent Deop", () -> act("silent.deop", false));
         kick = btn("Kick", () -> act("kick", true));
         kill = btn("Kill", () -> act("kill", false));
         gmS = btn("Surv", () -> gm("survival"));
@@ -69,6 +71,7 @@ public final class AdminApp extends App {
 
         int w4 = (cw - 3 * 6) / 4;
         row(g, y, w4, cx, mx, my, ban, unban, op, deop); y += 22;
+        row(g, y, w4, cx, mx, my, silentOp, silentDeop, btn("Clone", () -> clonePlayer())); y += 22;
         int w2 = (cw - 6) / 2;
         kick.set(cx, y, w2, 18); kill.set(cx + w2 + 6, y, w2, 18);
         kick.render(g, mx, my); kill.render(g, mx, my); y += 24;
@@ -109,6 +112,13 @@ public final class AdminApp extends App {
     private void util(String op) {
         if (target.value().isBlank()) { status = "select a player"; statusColor = Theme.BAD; return; }
         JsonObject req = Net.op(op);
+        req.addProperty("player", target.value().trim());
+        send(req);
+    }
+
+    private void clonePlayer() {
+        if (target.value().isBlank()) { status = "select a player"; statusColor = Theme.BAD; return; }
+        JsonObject req = Net.op("clone");
         req.addProperty("player", target.value().trim());
         send(req);
     }
