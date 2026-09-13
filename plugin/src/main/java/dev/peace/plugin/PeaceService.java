@@ -364,7 +364,11 @@ public final class PeaceService implements PluginMessageListener, Listener {
     public void onWandInteract(PlayerInteractEvent e) {
         if (e.getAction() != Action.RIGHT_CLICK_BLOCK && e.getAction() != Action.RIGHT_CLICK_AIR) return;
         ItemStack item = e.getItem();
-        if (item == null || item.getType() != Material.STICK || !item.hasItemMeta()) return;
+        if (item == null || item.getType() != Material.STICK || !item.hasItemMeta()) {
+            // Also check offhand - the wand might be there
+            item = e.getPlayer().getInventory().getItemInOffHand();
+            if (item == null || item.getType() != Material.STICK || !item.hasItemMeta()) return;
+        }
         String displayName = item.getItemMeta().getDisplayName();
         String mode;
         if (displayName == null) return;
