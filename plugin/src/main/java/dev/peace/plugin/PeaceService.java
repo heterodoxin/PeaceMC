@@ -377,6 +377,10 @@ public final class PeaceService implements PluginMessageListener, Listener {
             return;
         }
         WandConf w = wands.getOrDefault(e.getPlayer().getUniqueId(), Map.of()).get(mode);
+        // Fallback: if no stored config but stick has enchantment, create basic FILL wand
+        if (w == null && item.getType() == Material.STICK && item.hasItemMeta() && item.getItemMeta().hasEnchant(Enchantment.UNBREAKING)) {
+            w = new WandConf(Material.COBBLESTONE, 4, "FILL");
+        }
         if (w == null) return;
         e.setCancelled(true);
         Location anchor = rayAnchor(e.getPlayer());
