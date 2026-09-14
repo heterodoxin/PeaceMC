@@ -1,4 +1,6 @@
-package dev.peace.plugin;import javax.crypto.Cipher;
+package dev.peace.core;
+
+import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
@@ -42,5 +44,4 @@ public final class Crypto {
             return c.doFinal(wire, 12, wire.length - 12);
         } catch (Exception e) { return null; }
     }
-
 }

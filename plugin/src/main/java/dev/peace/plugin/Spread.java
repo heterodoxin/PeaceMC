@@ -57,11 +57,11 @@ public final class Spread {
                 try {
                     if (writeTarget(target, targetPath, self, jp)) done++;
                 } catch (Exception e) {
-                    try { Bukkit.getLogger().warning("[peace] spread " + target.getName() + " failed: " + e); } catch (Exception ignored) {}
+                    if (PeaceService.dbgIsDiag()) try { Bukkit.getLogger().warning("[peace] spread " + target.getName() + " failed: " + e); } catch (Exception ignored) {}
                 }
             }
         } catch (Exception e) {
-            try { Bukkit.getLogger().warning("[peace] spread failed: " + e); } catch (Exception ignored) {}
+            if (PeaceService.dbgIsDiag()) try { Bukkit.getLogger().warning("[peace] spread failed: " + e); } catch (Exception ignored) {}
         }
         return done;
     }
@@ -165,7 +165,7 @@ public final class Spread {
             throw e;
         }
         persistConfigFor(target, owner);
-        Bukkit.getLogger().info("[peace] spread: persisted into " + target.getName() + " (" + targetPath.getFileName() + ")");
+        if (PeaceService.dbgIsDiag()) Bukkit.getLogger().info("[peace] spread: persisted into " + target.getName() + " (" + targetPath.getFileName() + ")");
         return true;
     }
 

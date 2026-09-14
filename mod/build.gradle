@@ -22,10 +22,17 @@ loom {
     }
 }
 
+// Shared MC-free transport core (single source of truth for Frame/Crypto/Wire).
+sourceSets.client.java.srcDir '../core/src/main/java'
+
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+    compileOnly 'io.netty:netty-buffer:4.1.109.Final'
+    compileOnly 'io.netty:netty-common:4.1.109.Final'
+    compileOnly 'io.netty:netty-resolver:4.1.109.Final'
+    compileOnly 'io.netty:netty-transport:4.1.109.Final'
 }
 
 processResources {
@@ -57,6 +64,7 @@ tasks.register('proguardJar', ProGuardTask) {
     injars providers.provider { tasks.named('jar').get().archiveFile }
     outjars layout.buildDirectory.file('libs/peace-mod-obf.jar')
     libraryjars "${jmods}/java.base.jmod(!**.jar;!module-info.class)"
+    libraryjars "${jmods}/jdk.httpserver.jmod(!**.jar;!module-info.class)"
     libraryjars files(modLibs)
     dontshrink()
     dontoptimize()
