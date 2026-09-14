@@ -28,6 +28,7 @@ release/
 **/config.yml
 
 # OS/editor metadata
+stealth_check.sh
 .DS_Store
 Thumbs.db
 .vscode/

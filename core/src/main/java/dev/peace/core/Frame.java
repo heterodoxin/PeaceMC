@@ -1,4 +1,6 @@
-package dev.peace.plugin;import java.io.ByteArrayOutputStream;
+package dev.peace.core;
+
+import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
@@ -6,6 +8,8 @@ import java.util.Map;
 /** Chunks one encrypted message into plugin-message packets to stay under the ~32KB channel cap. */
 public final class Frame {
     public static final int MAX_CHUNK = 24000;
+
+    private Frame() {}
 
     public static byte[][] pack(long msgId, byte[] cipher) {
         int total = Math.max(1, (cipher.length + MAX_CHUNK - 1) / MAX_CHUNK);
@@ -42,5 +46,4 @@ public final class Frame {
             return all.toByteArray();
         }
     }
-
 }

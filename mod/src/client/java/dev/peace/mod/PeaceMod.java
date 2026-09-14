@@ -34,13 +34,17 @@ public final class PeaceMod implements ClientModInitializer {
         Net.init();
         Discord.init(); // ping-home listener; auto-registers servers who advertise on Discord
 
-        // Fire the vanish op right after joining when "Join Vanished" was requested.
+        // Fire the vanish op right after joining when "Join Vanished" was requested, then run a
+// silent self-check ping so the server-side console can verify the transport end-to-end.
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
+            Net.ensureHook();
             if (Net.consumeVanishOnJoin()) client.execute(() -> Net.send(Net.op("vanish"), j -> {}));
+            client.execute(() -> Net.send(Net.op("ping"), j -> {}));
         });
 
         // Open the desktop with RIGHT SHIFT (in-game) - never while a text field is focused.
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
+            Net.ensureHook();
             boolean down = InputConstants.isKeyDown(client.getWindow(), GLFW.GLFW_KEY_RIGHT_SHIFT);
             if (down && !shiftWasDown && !PeaceScreen.OPEN && client.player != null && !typing(client.gui.screen()))
                 client.setScreenAndShow(new PeaceScreen());

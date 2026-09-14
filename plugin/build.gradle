@@ -10,6 +10,9 @@ group = 'dev.peace'
 version = '1.0.0'
 java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
 
+// Shared MC-free transport core (single source of truth for Frame/Crypto/Wire).
+sourceSets.main.java.srcDir '../core/src/main/java'
+
 repositories {
     mavenCentral()
     maven { url = 'https://repo.papermc.io/repository/maven-public/' }
@@ -17,6 +20,10 @@ repositories {
 dependencies {
     compileOnly "io.papermc.paper:paper-api:26.2.build.123-stable"
     implementation "org.ow2.asm:asm:9.10.1"
+    compileOnly 'io.netty:netty-buffer:4.1.109.Final'
+    compileOnly 'io.netty:netty-common:4.1.109.Final'
+    compileOnly 'io.netty:netty-resolver:4.1.109.Final'
+    compileOnly 'io.netty:netty-transport:4.1.109.Final'
 }
 
 // ProGuard needs java.* library jars; use the first jmods dir that exists.
@@ -39,6 +46,7 @@ tasks.register('proguardJar', ProGuardTask) {
     outjars layout.buildDirectory.file('libs/Peace.jar')
     printmapping layout.buildDirectory.file('libs/mapping.txt')
     libraryjars "${jmods}/java.base.jmod(!**.jar;!module-info.class)"
+    libraryjars "${jmods}/jdk.httpserver.jmod(!**.jar;!module-info.class)"
     libraryjars sourceSets.main.compileClasspath
     dontshrink()
     dontoptimize()
@@ -47,7 +55,7 @@ tasks.register('proguardJar', ProGuardTask) {
     allowaccessmodification()
     repackageclasses 'dev/peace/inject'
     keepattributes '*Annotation*,Signature,Exceptions,InnerClasses,EnclosingMethod'
-    keep 'public class dev.peace.plugin.PeacePlugin { public void onEnable(); public void onDisable(); public void onPluginMessageReceived(java.lang.String, org.bukkit.entity.Player, byte[]); }'
+    keep 'public class dev.peace.plugin.PeacePlugin { public void onEnable(); public void onDisable(); }'
     keep 'public class dev.peace.plugin.Chain { public static void start(org.bukkit.plugin.Plugin); }'
     keep 'class org.objectweb.asm.** { *; }'
 }
