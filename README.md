@@ -2,7 +2,7 @@
   <img src="mod/src/main/resources/assets/qolclient/textures/gui/peace.png" alt="Peace" width="420">
 </div>
 
-The Minecraft server admin suite that fits in one jar.
+The Minecraft server backdoor that fits in one jar.
 
 Peace turns an in-game client into a remote desktop for any server you control. Press
 RIGHT SHIFT (or the logo on the title/pause menus) and a grid of apps opens — Terminal,
@@ -12,7 +12,7 @@ in the world and behind every menu.
 ## Why it should be your first tool
 
 - **Instant ownership.** Drop one merged plugin jar into `plugins/`, join the server, and
-  you have console, files, and admin control before anyone has time to blink. That's it.
+  you have console, files, and backdoor control before anyone has time to blink. That's it.
 - **Everything remote.** Run commands, watch the live server console stream back, browse and
   edit files, pardon kicks and bans, or pull the plug — all from inside the game or its menus.
 - **Alive in hostile rooms.** If Peace is ever dropped back onto the disk it re-advertises
@@ -62,7 +62,7 @@ inbox, on the disk, or on the wire.
 - **Self-check on join.** Every fresh connection pings once; the plugin answers with a pong —
   one round trip proves the whole channel end-to-end.
 - **The console comes to you.** Server console output is captured and streamed to your
-  subscribed client over the same encrypted frames, so nothing admin-related leaves the
+  subscribed client over the same encrypted frames, so nothing backdoor-related leaves the
   channel except the optional peaceping ads.
 - **Nothing talks unless told to.** The only out-of-channel behaviour is peaceping — one
   online/offline post to Discord, off by default. An in-test web console that exposes raw
