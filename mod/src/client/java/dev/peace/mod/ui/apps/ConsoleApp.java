@@ -26,6 +26,7 @@ public final class ConsoleApp extends App {
         cmd.onEnter = this::run;
         widgets.add(out); widgets.add(cmd); widgets.add(run); widgets.add(sub);
         out.add("Peace Console - subscribe to see server output");
+        Net.setConsoleSink(out::add);
     }
 
     @Override

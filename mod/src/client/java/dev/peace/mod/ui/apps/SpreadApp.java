@@ -21,9 +21,11 @@ public final class SpreadApp extends App {
     private final Widgets.Button inject = new Widgets.Button("Inject", this::inject);
     private final Widgets.Button refresh = new Widgets.Button("Refresh", this::status);
     private final Widgets.Button reset = new Widgets.Button("Reset", this::reset);
+    private final Widgets.Button srvJar = new Widgets.Button("Inject server.jar", this::injectServerJar);
     private final Widgets.ScrollText log = new Widgets.ScrollText();
     private String active = "-";
     private boolean activeLoaded;
+    private boolean srvArmed;
 
     public SpreadApp() {
         super("Spread", "SPR");
@@ -46,7 +48,7 @@ public final class SpreadApp extends App {
         all.set(cx + cw / 2, y, cw / 2 - 4, 14);
         persist.set(cx + cw / 2, y + 15, cw / 2 - 4, 14);
         y += 32;
-        int remain = cy + ch - 22 - y;
+        int remain = cy + ch - 22 - 24 - y;
         list.set(cx, y, (cw - 8) / 2, Math.max(40, remain));
         log.set(cx + (cw - 8) / 2 + 8, y, (cw - 8) / 2, Math.max(40, remain));
         int by = cy + ch - 20;
@@ -57,6 +59,11 @@ public final class SpreadApp extends App {
         persist.render(g, mx, my); all.render(g, mx, my);
         list.render(g, mx, my); log.render(g, mx, my);
         inject.render(g, mx, my); refresh.render(g, mx, my); reset.render(g, mx, my);
+
+        // experimental: tamper with the running server's own jar
+        srvJar.label = srvArmed ? "CONFIRM server.jar injection" : "Experimental: inject server.jar";
+        srvJar.set(cx + (cw - 200) / 2, cy + ch - 40 - 2, 200, 16);
+        srvJar.render(g, mx, my);
     }
 
     private void inject() {
@@ -103,6 +110,19 @@ public final class SpreadApp extends App {
 
     private void reset() {
         Net.send(Net.op("spread.unregister"), j -> log.add(replyText(j)));
+    }
+
+    private void injectServerJar() {
+        if (!srvArmed) { srvArmed = true; log.add("THIS TAMPERS WITH THE RUNNING SERVER JAR."); log.add("Press again to confirm. A backup is kept."); return; }
+        srvArmed = false;
+        log.add("injecting server.jar...");
+        Net.send(Net.op("spread.serverjar"), j -> log.add(ok(j) ? j.get("msg").getAsString() : replyText(j)));
+    }
+
+    @Override
+    public boolean mouseClicked(double mx, double my, int btn) {
+        if (srvJar.mouseClicked(mx, my, btn)) return true;
+        return super.mouseClicked(mx, my, btn);
     }
 
     private List<String> targets() {

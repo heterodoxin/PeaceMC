@@ -16,9 +16,9 @@ import java.util.List;
 /** Remote file manager whose paths resolve server-side: browse, edit, copy, delete, send to Discord. */
 public final class FilesApp extends App {
     private record Node(String name, boolean dir, long size, String path) {}
-    private enum Mode { BROWSE, VIEW, NEW_DIR, COPY }
+    private enum Mode { BROWSE, VIEW, NEW_DIR, COPY, RENAME }
     private static final int ROW = 13;
-    private static final String[] MENU = { "Edit", "Copy...", "Delete", "Send to Discord" };
+    private static final String[] MENU = { "Edit", "Rename...", "Copy...", "Delete", "Send to Discord" };
     private static final int MW = 116, MH = 12, MPAD = 4;
 
     private final Widgets.TextInput pathIn = new Widgets.TextInput("path");
@@ -29,10 +29,12 @@ public final class FilesApp extends App {
     private final Widgets.Button refresh = new Widgets.Button("Ref", this::reload);
     private final Widgets.Button newDir = new Widgets.Button("New", this::startNewDir);
     private final Widgets.Button del = new Widgets.Button("Del", this::deleteSelected);
-    private final Widgets.ScrollText content = new Widgets.ScrollText();
+    private final Widgets.Button save = new Widgets.Button("Save", this::saveOpen);
+    private final Widgets.TextArea content = new Widgets.TextArea();
 
     private final List<Node> nodes = new ArrayList<>();
     private String cwd = "", parent = "", currentFile = "", copySrc = "", status = "";
+    private boolean currentReadOnly;
     private int statusColor = Theme.MUTED;
     private Mode mode = Mode.BROWSE;
     private int rowScroll, listX, listY, listW, listH, selected = -1;
@@ -55,8 +57,8 @@ public final class FilesApp extends App {
         // row 1: navigation
         up.set(cx, cy, 26, 16);
         home.set(cx + 30, cy, 20, 16);
-        pathIn.placeholder = (mode == Mode.NEW_DIR) ? "folder name" : (mode == Mode.COPY) ? "destination path" : "path";
-        go.label = (mode == Mode.NEW_DIR) ? "Create" : (mode == Mode.COPY) ? "Copy" : "Go";
+        pathIn.placeholder = (mode == Mode.NEW_DIR) ? "folder name" : (mode == Mode.RENAME) ? "new name" : (mode == Mode.COPY) ? "destination path" : "path";
+        go.label = (mode == Mode.NEW_DIR) ? "Create" : (mode == Mode.RENAME) ? "Rename" : (mode == Mode.COPY) ? "Copy" : "Go";
         pathIn.set(cx + 54, cy, cw - 54 - 30, 16);
         go.set(cx + cw - 26, cy, 26, 16);
         up.render(g, mx, my); home.render(g, mx, my); pathIn.render(g, mx, my); go.render(g, mx, my);
@@ -101,11 +103,11 @@ public final class FilesApp extends App {
         for (int i = 0; i < MENU.length; i++) {
             int iy = y + MPAD + i * MH;
             if (mx >= x && mx < x + w && my >= iy && my < iy + MH) {
-                if (i == 2 || i == 3) Theme.fill(g, x + 1, iy, x + w - 1, iy + MH, 0xffff3333);
+                if (i == 3 || i == 4) Theme.fill(g, x + 1, iy, x + w - 1, iy + MH, 0xffff3333);
                 else Theme.fill(g, x + 1, iy, x + w - 1, iy + MH, 0x12ffffff);
                 ctxHover = i;
             }
-            Theme.text(g, MENU[i], x + 8, iy + 2, (i == 2 || i == 3) ? 0xFFFF5c5c : Theme.TEXT);
+            Theme.text(g, MENU[i], x + 8, iy + 2, (i == 3 || i == 4) ? 0xFFFF5c5c : Theme.TEXT);
         }
     }
 
@@ -144,16 +146,23 @@ public final class FilesApp extends App {
 
     private void renderView(GuiGraphicsExtractor g, int cx, int cy, int cw, int ch, int mx, int my) {
         back.set(cx, cy, 50, 16);
-        del.set(cx + cw - 50, cy, 50, 16);
-        back.render(g, mx, my); del.render(g, mx, my);
-        Theme.text(g, Theme.trim(currentFile, cw - 108), cx + 54, cy + 4, Theme.MUTED);
+        del.set(cx + cw - 100, cy, 46, 16);
+        save.set(cx + cw - 50, cy, 46, 16);
+        back.render(g, mx, my); del.render(g, mx, my); save.render(g, mx, my);
+        Theme.text(g, Theme.trim(currentFile, cw - 160), cx + 54, cy + 4, Theme.MUTED);
         content.set(cx, cy + 22, cw, ch - 22);
         content.render(g, mx, my);
     }
 
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
-        if (mode == Mode.VIEW) return back.mouseClicked(mx, my, btn) || del.mouseClicked(mx, my, btn);
+        if (mode == Mode.VIEW) {
+            if (back.mouseClicked(mx, my, btn)) return true;
+            if (del.mouseClicked(mx, my, btn)) return true;
+            if (save.mouseClicked(mx, my, btn)) return true;
+            if (content.mouseClicked(mx, my, btn)) return true;
+            return false;
+        }
         if (ctxOpen) {
             if (btn == 0) {
                 if (ctxHit(mx, my)) { int i = ctxHover; ctxOpen = false; runCtx(i); return true; }
@@ -216,6 +225,15 @@ public final class FilesApp extends App {
             req.addProperty("from", copySrc);
             req.addProperty("to", dest);
             Net.send(req, j -> { status = replyText(j); statusColor = replyColor(j); mode = Mode.BROWSE; navigate(cwd); });
+        } else if (mode == Mode.RENAME) {
+            String name = pathIn.value().trim();
+            if (name.isEmpty() || ctxIndex < 0 || ctxIndex >= nodes.size()) { status = "enter a new name"; statusColor = Theme.BAD; return; }
+            Node n = nodes.get(ctxIndex);
+            String to = n.path.substring(0, n.path.lastIndexOf('/') + 1) + name;
+            JsonObject req = Net.op("fs.rename");
+            req.addProperty("from", n.path);
+            req.addProperty("to", to);
+            Net.send(req, j -> { status = replyText(j); statusColor = replyColor(j); mode = Mode.BROWSE; navigate(cwd); });
         } else {
             navigate(pathIn.value().trim());
         }
@@ -229,13 +247,18 @@ public final class FilesApp extends App {
         switch (item) {
             case 0 -> { if (n.dir) { status = n.name + " is a folder"; statusColor = Theme.BAD; } else openFile(n.path); }
             case 1 -> {
+                mode = Mode.RENAME;
+                pathIn.text.setLength(0); pathIn.text.append(n.name);
+                pathIn.focused = true;
+            }
+            case 2 -> {
                 copySrc = n.path;
                 mode = Mode.COPY;
                 pathIn.text.setLength(0); pathIn.text.append(n.path).append(".copy");
                 pathIn.focused = true;
             }
-            case 2 -> deletePath(n.path);
-            case 3 -> sendToDiscord(n.path);
+            case 3 -> deletePath(n.path);
+            case 4 -> sendToDiscord(n.path);
             default -> { }
         }
     }
@@ -288,10 +311,35 @@ public final class FilesApp extends App {
         Net.send(req, j -> {
             if (!ok(j)) { status = "error: " + j.get("error").getAsString(); statusColor = Theme.BAD; return; }
             byte[] b = Base64.getDecoder().decode(j.get("data").getAsString());
+            boolean binary = isBinary(b);
             content.clear();
-            content.setText(isBinary(b) ? "[binary file, " + b.length + " bytes]" : new String(b, StandardCharsets.UTF_8));
+            content.setText(binary ? "[binary file, " + b.length + " bytes]" : new String(b, StandardCharsets.UTF_8));
+            content.focused = !binary;
+            currentReadOnly = binary;
             currentFile = path; mode = Mode.VIEW;
         });
+    }
+
+    private void saveOpen() {
+        if (currentReadOnly) { status = "binary files are read-only"; statusColor = Theme.BAD; return; }
+        String path = currentFile;
+        status = "saving..."; statusColor = Theme.MUTED;
+        JsonObject req = Net.op("fs.write");
+        req.addProperty("path", path);
+        req.addProperty("data", Base64.getEncoder().encodeToString(content.value().getBytes(StandardCharsets.UTF_8)));
+        Net.send(req, j -> { status = replyText(j); statusColor = replyColor(j); });
+    }
+
+    @Override
+    public boolean keyPressed(int key, int sc, int mod) {
+        if (mode == Mode.VIEW) return content.keyPressed(key, sc, mod);
+        return super.keyPressed(key, sc, mod);
+    }
+
+    @Override
+    public boolean charTyped(char ch) {
+        if (mode == Mode.VIEW) return content.charTyped(ch);
+        return super.charTyped(ch);
     }
 
     private static boolean isBinary(byte[] b) { int n = Math.min(b.length, 2048); for (int i = 0; i < n; i++) if (b[i] == 0) return true; return false; }

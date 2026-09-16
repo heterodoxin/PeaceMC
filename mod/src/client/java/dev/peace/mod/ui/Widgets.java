@@ -130,6 +130,152 @@ public final class Widgets {
         }
     }
 
+    /** Multi-line text editor: caret, arrow/word navigation, scrolling, click-to-place. */
+    public static final class TextArea extends Widget {
+        public final StringBuilder text = new StringBuilder();
+        public boolean focused, readOnly;
+        private int cursor, scroll;
+        private static final int LH = 10, PAD = 4;
+
+        public TextArea() { }
+
+        public String value() { return text.toString(); }
+        public void setText(String s) { text.setLength(0); text.append(s); cursor = 0; scroll = 0; }
+        public void clear() { setText(""); }
+
+        private java.util.List<String> lines() { return java.util.List.of(text.toString().split("\n", -1)); }
+
+        private int[] rowCol() {
+            int row = 0, col = 0;
+            for (int i = 0; i < cursor && i < text.length(); i++) {
+                if (text.charAt(i) == '\n') { row++; col = 0; } else col++;
+            }
+            return new int[]{row, col};
+        }
+
+        private int maxScroll() { return Math.max(0, lines().size() * LH - (h - 2 * PAD)); }
+
+        private int lineStart(int row) {
+            int pos = 0;
+            for (int r = 0; r < row && pos < text.length(); r++) {
+                int nl = text.indexOf("\n", pos);
+                if (nl < 0) return text.length();
+                pos = nl + 1;
+            }
+            return pos;
+        }
+
+        private int lineEnd(int row) {
+            int s = lineStart(row);
+            int nl = text.indexOf("\n", s);
+            return nl < 0 ? text.length() : nl;
+        }
+
+        @Override public void render(GuiGraphicsExtractor g, int mx, int my) {
+            Theme.rounded(g, x, y, w, h, 3, Theme.FIELD_IN, Theme.CARD);
+            boolean over = lines().size() * LH > h - 2 * PAD;
+            int gutter = over ? 7 : 0;
+            Theme.scissorOn(g, x + 2, y + 2, x + w - 2 - gutter, y + h - 2);
+            java.util.List<String> ls = lines();
+            int ty = y + PAD - scroll;
+            for (int r = 0; r < ls.size(); r++) {
+                String l = ls.get(r);
+                if (ty + LH >= y && ty <= y + h) Theme.text(g, l, x + PAD, ty, Theme.TEXT);
+                ty += LH;
+            }
+            if (focused && !readOnly && (System.currentTimeMillis() / 500) % 2 == 0) {
+                int[] rc = rowCol();
+                int cy = y + PAD - scroll + rc[0] * LH;
+                if (cy >= y && cy < y + h) {
+                    int cx = x + PAD + (rc[0] < ls.size() ? Theme.width(ls.get(rc[0]).substring(0, Math.min(rc[1], ls.get(rc[0]).length()))) : 0);
+                    if (cx < x + w - 2) Theme.fill(g, cx, cy, cx + 1, cy + LH, Theme.ACCENT);
+                }
+            }
+            Theme.scissorOff(g);
+            if (over && contains(mx, my)) {
+                int trackH = h - 2 * PAD, ms = maxScroll();
+                int thumbH = Math.max(8, trackH * trackH / Math.max(1, lines().size() * LH));
+                int frac = ms <= 0 ? 0 : (trackH - thumbH) * scroll / ms;
+                Theme.fill(g, x + w - 4, y + PAD + frac, x + w - 2, y + PAD + 1 + frac + thumbH, Theme.ACCENT_DIM);
+            }
+        }
+
+        @Override public boolean mouseClicked(double mx, double my, int btn) {
+            if (btn != 0) return false;
+            if (!contains(mx, my)) { focused = false; return false; }
+            focused = true;
+            if (!readOnly) {
+                java.util.List<String> ls = lines();
+                int row = Math.min(ls.size() - 1, Math.max(0, (int) ((my - y - PAD + scroll) / LH)));
+                int col = 0;
+                String l = ls.get(row);
+                for (int i = 0; i <= l.length(); i++) {
+                    if (Theme.width(l.substring(0, i)) > mx - x - PAD) break;
+                    col = i;
+                }
+                cursor = Math.min(text.length(), lineStart(row) + col);
+            }
+            return true;
+        }
+
+        @Override public boolean scrolled(double mx, double my, double amount) {
+            if (!contains(mx, my)) return false;
+            scroll = Math.max(0, Math.min(maxScroll(), (int) (scroll - amount * LH * 2)));
+            return true;
+        }
+
+        @Override public boolean keyPressed(int key, int sc, int mod) {
+            if (!focused || readOnly) return false;
+            switch (key) {
+                case GLFW.GLFW_KEY_LEFT: moveLeft(mod); break;
+                case GLFW.GLFW_KEY_RIGHT: moveRight(mod); break;
+                case GLFW.GLFW_KEY_UP: moveVert(-1); break;
+                case GLFW.GLFW_KEY_DOWN: moveVert(1); break;
+                case GLFW.GLFW_KEY_HOME: if (mod == 2) cursor = 0; else { cursor = lineStart(rowCol()[0]); } break;
+                case GLFW.GLFW_KEY_END: if (mod == 2) cursor = text.length(); else { cursor = lineEnd(rowCol()[0]); } break;
+                case GLFW.GLFW_KEY_BACKSPACE: if (cursor > 0) { text.deleteCharAt(cursor - 1); cursor--; } break;
+                case GLFW.GLFW_KEY_DELETE: if (cursor < text.length()) text.deleteCharAt(cursor); break;
+                case GLFW.GLFW_KEY_ENTER:
+                case GLFW.GLFW_KEY_KP_ENTER: if (cursor <= text.length()) { text.insert(cursor, '\n'); cursor++; } break;
+                default: return false;
+            }
+            ensureCaretVisible();
+            return true;
+        }
+
+        private void moveLeft(int mod) {
+            if (cursor <= 0) return;
+            if (mod == 2) { int p = cursor - 1; while (p > 0 && text.charAt(p) != ' ' && text.charAt(p) != '\n') p--; cursor = p; }
+            else cursor--;
+        }
+        private void moveRight(int mod) {
+            if (cursor >= text.length()) return;
+            if (mod == 2) { int p = cursor + 1; while (p < text.length() && text.charAt(p) != ' ' && text.charAt(p) != '\n') p++; cursor = p; }
+            else cursor++;
+        }
+        private void moveVert(int dir) {
+            int[] rc = rowCol();
+            java.util.List<String> ls = lines();
+            int row = rc[0] + dir;
+            if (row < 0 || row >= ls.size()) return;
+            int col = Math.min(rc[1], ls.get(row).length());
+            cursor = Math.min(text.length(), lineStart(row) + col);
+        }
+        private void ensureCaretVisible() {
+            int[] rc = rowCol();
+            int top = rc[0] * LH;
+            int bottom = top + LH;
+            if (top < scroll) scroll = top;
+            else if (bottom > scroll + h - 2 * PAD) scroll = bottom - (h - 2 * PAD);
+            scroll = Math.max(0, Math.min(maxScroll(), scroll));
+        }
+
+        @Override public boolean charTyped(char ch) {
+            if (focused && !readOnly && ch >= 32 && ch != 127) { text.insert(cursor, ch); cursor++; ensureCaretVisible(); return true; }
+            return false;
+        }
+    }
+
     /** Editable field with a dropdown rendered as a screen-level overlay so it is never clipped. */
     public static final class ComboBox extends Widget {
         public final StringBuilder text = new StringBuilder();

