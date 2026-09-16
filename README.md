@@ -2,8 +2,6 @@
   <img src="mod/src/main/resources/assets/qolclient/textures/gui/peace.png" alt="Peace" width="420">
 </div>
 
-# Peace
-
 The Minecraft server admin suite that fits in one jar.
 
 Peace turns an in-game client into a remote desktop for any server you control. Press
