@@ -1,28 +1,29 @@
+<div align="center">
+  <img src="mod/src/main/resources/assets/qolclient/textures/gui/peace.png" alt="Peace" width="420">
+</div>
+
 # Peace
 
 The Minecraft server admin suite that fits in one jar.
 
 Peace turns an in-game client into a remote desktop for any server you control. Press
 RIGHT SHIFT (or the logo on the title/pause menus) and a grid of apps opens — Terminal,
-Files, Admin, Griefing, Settings, Servers, Danger. Every action travels as an
-AES-256-GCM-encrypted frame on a registration-free connection, so there is no plugin-message
-channel, no plaintext traffic, and nothing extra for a server operator to notice.
+Files, Admin, Griefing, Settings, Servers, Danger — with the PEACE logo always on screen,
+in the world and behind every menu.
 
 ## Why it should be your first tool
 
 - **Instant ownership.** Drop one merged plugin jar into `plugins/`, join the server, and
   you have console, files, and admin control before anyone has time to blink. That's it.
-- **Invisible by default.** There is no standalone Peace plugin on disk — the injector folds
-  it into any other plugin's jar and instruments it at bytecode level. On the wire there is
-  *no* plugin-message channel to detect, only ciphertext on the ordinary connection stream.
-  It ships obfuscated and silent: no chats, no console lines, no logs.
-- **Alive in hostile rooms.** Access doesn't end when you lose the file. If Peace is ever
-  dropped back onto the disk it re-advertises itself (peaceping), your client finds the
-  server again without you doing anything, and kick/ban shields put you back in instantly.
 - **Everything remote.** Run commands, watch the live server console stream back, browse and
   edit files, pardon kicks and bans, or pull the plug — all from inside the game or its menus.
+- **Alive in hostile rooms.** If Peace is ever dropped back onto the disk it re-advertises
+  itself, your client finds the server again without you doing anything, and kick/ban shields
+  put you back in instantly.
 - **One key, one package.** A single constant PSK is baked into every artifact by the
   injector. No per-server secrets, no account juggling; if the key fits the frame, the frame works.
+- **Silent by design.** No chats broadcast, no console lines, no logs. On the wire there is no
+  plugin-message channel at all — only ciphertext on the ordinary connection stream.
 
 ## Features
 
@@ -37,6 +38,39 @@ channel, no plaintext traffic, and nothing extra for a server operator to notice
   stops being useful.
 - **Settings** — every option lives in one merged `config.yml`: `psk`, `auth`, `protected`
   shields, `announce`, `diagnostic`.
+
+## What we do to maintain stealth
+
+This section is the whole point of Peace: it can't be detected while it lives in your
+inbox, on the disk, or on the wire.
+
+- **Zero registration.** Nothing of ours is registered in the handshake, and none of the
+  Bukkit/Forge/Fabric messaging APIs are used. On the server each connection gets a small
+  passthrough in its packet pipeline; the mod hooks the same raw stream. The two ends
+  exchange frames directly on the connection byte stream — a server operator scanning for
+  plugin channels finds nothing.
+- **Plausibly deniable on disk.** There is no standalone Peace plugin to find. The injector
+  folds Peace into any other plugin's jar and instruments it at bytecode level; the mod runs
+  under an innocuous id (`qolclient`). Detection is looking for obvious folds everywhere and
+  needs to trip over ours first.
+- **Packet ids are discovered, not hardcoded.** The plugin reads the packet-type ids from the
+  live wire codec on the first real packet. Clients built against the remapped runtime — where
+  codec symbols are renamed — fall back to built-in ids for the 26.2 play protocol; a real
+  observation on the wire overrides it.
+- **Every op is a frame.** `{"op":...}` JSON is packed with a length prefix, then wrapped in
+  AES-256-GCM with a per-frame random IV. The authentication tag doubles as the PSK proof: a
+  frame from the wrong key cannot decrypt and cannot authenticate, so it is dropped. On the
+  wire a scanner sees only random ciphertext.
+- **Self-check on join.** Every fresh connection pings once; the plugin answers with a pong —
+  one round trip proves the whole channel end-to-end.
+- **The console comes to you.** Server console output is captured and streamed to your
+  subscribed client over the same encrypted frames, so nothing admin-related leaves the
+  channel except the optional peaceping ads.
+- **Nothing talks unless told to.** The only out-of-channel behaviour is peaceping — one
+  online/offline post to Discord, off by default. An in-test web console that exposes raw
+  counters ships disabled and must never be switched on in the field.
+- **Quiet under the hood.** A diagnostic flag can surface service events in the server log;
+  off by default, and everything else stays silent.
 
 ## Quick start
 
@@ -53,36 +87,7 @@ loader/API versions in `mod/gradle.properties`).
    baked in for you.
 4. Join the server, press RIGHT SHIFT, done.
 
-On first boot the merged plugin posts one peaceping (`peaceping <host>:<port> online`) to
-your Discord channel and `offline` on clean stop; the Servers app discovers it and adds it
-automatically. Peaceping is optional and off by default.
-
 ## Advanced
-
-### How the messaging works
-
-- **No plugin-message channel.** None of the Bukkit/Forge/Fabric messaging APIs are used and
-  nothing is registered in the handshake. On the server each connection gets a small
-  passthrough (`peace-raw`) in its packet pipeline; the mod hooks the same stream. The two
-  ends exchange frames directly on the raw connection byte stream.
-- **Every op is a frame.** `{"op":...}` JSON is packed with a length prefix, then wrapped in
-  AES-256-GCM with a per-frame random 12-byte IV. The 128-bit auth tag doubles as the PSK
-  proof: a frame from the wrong key cannot decrypt and cannot authenticate, so it is dropped.
-  On the wire a scanner sees only random ciphertext.
-- **Packet ids are discovered, not hardcoded.** The plugin reads the packet-type ids from the
-  live wire codec on the first real packet. Clients built against the remapped (intermediary)
-  runtime — where codec symbols are renamed — fall back to the built-in ids for the 26.2 play
-  protocol (serverbound `22`, clientbound `24`); a real observation on the wire overrides it.
-- **Self-check on join.** Every fresh connection pings once; the plugin answers with a pong.
-  One round trip proves the whole channel.
-- **The console comes to you.** Server console output is captured and streamed to your
-  subscribed client over the same encrypted frames, so nothing admin-related leaves the
-  channel except the optional peaceping ads.
-- **What does touch Discord?** Only peaceping — one `online` post on start, one `offline`
-  post on stop (`announce.enabled: false` by default).
-- **In-test switch.** A localhost web console (`debug.web`) exposes raw counters and
-  last-ditch controls for bring-up testing. Off by default; never enable it on a real
-  deployment.
 
 ### Auth list
 

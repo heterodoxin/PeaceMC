@@ -8,6 +8,7 @@ import dev.peace.mod.ui.Theme;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenKeyboardEvents;
 import net.fabricmc.fabric.api.client.screen.v1.Screens;
@@ -16,6 +17,7 @@ import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.PauseScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.TitleScreen;
+import net.minecraft.resources.Identifier;
 import org.lwjgl.glfw.GLFW;
 
 public final class PeaceMod implements ClientModInitializer {
@@ -51,11 +53,17 @@ public final class PeaceMod implements ClientModInitializer {
             shiftWasDown = down;
         });
 
-        // PEACE logo button on title/pause menus, and RIGHT SHIFT opens the desktop from any menu.
+        // PEACE logo overlay: always visible, in-game HUD and every menu screen.
+        HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("qolclient", "peace_logo"),
+                (g, delta) -> Theme.logo(g, 6, 6, Theme.LOGO_OVERLAY_W, Theme.logoOverlayH()));
         ScreenEvents.AFTER_INIT.register((client, screen, w, h) -> {
             if (screen instanceof PeaceScreen) return;
-            if (screen instanceof TitleScreen || screen instanceof PauseScreen)
+            if (screen instanceof TitleScreen || screen instanceof PauseScreen) {
                 Screens.getWidgets(screen).add(new LogoButton(6, 6, Theme.LOGO_DISPLAY_W, screen));
+            } else {
+                ScreenEvents.afterExtract(screen).register((scr, g, mx, my, delta) ->
+                        Theme.logo(g, 6, 6, Theme.LOGO_OVERLAY_W, Theme.logoOverlayH()));
+            }
             ScreenKeyboardEvents.afterKeyPress(screen).register((scr, keyEvent) -> {
                 if (keyEvent.key() == GLFW.GLFW_KEY_RIGHT_SHIFT && !PeaceScreen.OPEN && !typing(scr))
                     client.setScreenAndShow(new PeaceScreen(scr));

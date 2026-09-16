@@ -35,7 +35,9 @@ public final class Theme {
     // one logo display size, shared by menu and desktop so it matches in and out of the GUI
     public static final int LOGO_W = 866, LOGO_H = 288;
     public static final int LOGO_DISPLAY_W = 240;
+    public static final int LOGO_OVERLAY_W = 160;
     public static int logoH() { return LOGO_DISPLAY_W * LOGO_H / LOGO_W; }
+    public static int logoOverlayH() { return LOGO_OVERLAY_W * LOGO_H / LOGO_W; }
 
     private static final String NS = "qolclient"; // innocuous mod id: keeps logs clean
     private static final int CMSK = 32; // corner mask texture size
