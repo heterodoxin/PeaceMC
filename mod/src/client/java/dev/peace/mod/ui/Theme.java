@@ -32,12 +32,36 @@ public final class Theme {
     public static final int[] ACCENTS = {0xFFe6202e, 0xFF9b30ff, 0xFF2f7bff, 0xFF25c26b, 0xFFff8c1a, 0xFF18c0c0};
     public static final String[] ACCENT_NAMES = {"Red", "Purple", "Blue", "Green", "Orange", "Cyan"};
 
-    // one logo display size, shared by menu and desktop so it matches in and out of the GUI
+    // The wordmark tracks a fraction of the window's pixel width so it adapts to the
+    // display, but is clamped to a fixed physical band so it never balloons or vanishes;
+    // then it is converted into GUI units so the HUD and every screen agree on its size
+    // regardless of the GUI Scale setting. One size everywhere, in and out of a GUI.
     public static final int LOGO_W = 866, LOGO_H = 288;
-    public static final int LOGO_DISPLAY_W = 240;
-    public static final int LOGO_OVERLAY_W = 160;
-    public static int logoH() { return LOGO_DISPLAY_W * LOGO_H / LOGO_W; }
-    public static int logoOverlayH() { return LOGO_OVERLAY_W * LOGO_H / LOGO_W; }
+    public static final float LOGO_WINDOW_FRAC = 0.15f;             // share of framebuffer width
+    public static final int LOGO_MIN_PX = 180, LOGO_MAX_PX = 420;   // physical size band
+    public static final int LOGO_MARGIN_PX = 8;                     // physical top-left inset
+
+    /** Logo width in GUI units for the current window. */
+    public static int logoW() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null || mc.getWindow() == null) return LOGO_MAX_PX / 2;
+        var win = mc.getWindow();
+        int fbw = Math.max(1, win.getWidth());
+        int gsw = Math.max(1, win.getGuiScaledWidth());
+        int target = Math.max(LOGO_MIN_PX, Math.min(LOGO_MAX_PX, Math.round(fbw * LOGO_WINDOW_FRAC)));
+        return Math.max(1, Math.round(target * gsw / (float) fbw));
+    }
+    public static int logoH() { return logoW() * LOGO_H / LOGO_W; }
+
+    /** Top-left inset in GUI units matching a fixed physical margin. */
+    public static int logoMargin() {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null || mc.getWindow() == null) return LOGO_MARGIN_PX;
+        var win = mc.getWindow();
+        int fbw = Math.max(1, win.getWidth());
+        int gsw = Math.max(1, win.getGuiScaledWidth());
+        return Math.max(1, Math.round(LOGO_MARGIN_PX * gsw / (float) fbw));
+    }
 
     private static final String NS = "qolclient"; // innocuous mod id: keeps logs clean
     private static final int CMSK = 32; // corner mask texture size
@@ -149,6 +173,9 @@ public final class Theme {
         rounded(g, x, y, w, h, 6, CARD, BG);
         hline(g, x + 14, y + 1, w - 28, 0x22ffffff);
     }
+
+    /** The logo at the standard fixed-physical top-left inset; identical in the HUD and every screen. */
+    public static void logo(GuiGraphicsExtractor g) { int m = logoMargin(); logo(g, m, m, logoW(), logoH()); }
 
     /** Logo tinted with the accent color (white source * accent). */
     public static void logo(GuiGraphicsExtractor g, int x, int y, int drawW, int drawH) {

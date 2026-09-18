@@ -55,14 +55,14 @@ public final class PeaceMod implements ClientModInitializer {
 
         // PEACE logo overlay: always visible, in-game HUD and every menu screen.
         HudElementRegistry.addLast(Identifier.fromNamespaceAndPath("qolclient", "peace_logo"),
-                (g, delta) -> Theme.logo(g, 6, 6, Theme.LOGO_OVERLAY_W, Theme.logoOverlayH()));
+                (g, delta) -> Theme.logo(g));
         ScreenEvents.AFTER_INIT.register((client, screen, w, h) -> {
             if (screen instanceof PeaceScreen) return;
             if (screen instanceof TitleScreen || screen instanceof PauseScreen) {
-                Screens.getWidgets(screen).add(new LogoButton(6, 6, Theme.LOGO_DISPLAY_W, screen));
+                Screens.getWidgets(screen).add(new LogoButton(Theme.logoMargin(), Theme.logoMargin(), Theme.logoW(), screen));
             } else {
                 ScreenEvents.afterExtract(screen).register((scr, g, mx, my, delta) ->
-                        Theme.logo(g, 6, 6, Theme.LOGO_OVERLAY_W, Theme.logoOverlayH()));
+                        Theme.logo(g));
             }
             ScreenKeyboardEvents.afterKeyPress(screen).register((scr, keyEvent) -> {
                 if (keyEvent.key() == GLFW.GLFW_KEY_RIGHT_SHIFT && !PeaceScreen.OPEN && !typing(scr))

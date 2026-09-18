@@ -25,7 +25,7 @@ import java.util.function.Supplier;
 public final class PeaceScreen extends Screen {
     public static volatile boolean OPEN = false;
     private static final int TILE = 40;
-    private static final int TOP_H = Theme.logoH() + 14;
+    private final int topH = Theme.logoH() + 14;
 
     private record Entry(String label, String icon, Supplier<App> make) {}
     private static final List<Entry> APPS = List.of(
@@ -50,7 +50,7 @@ public final class PeaceScreen extends Screen {
     public PeaceScreen(Screen parent) {
         super(Component.literal("PEACE"));
         this.parent = parent;
-        int y = TOP_H + 16;
+        int y = topH + 16;
         for (int i = 0; i < APPS.size(); i++) {
             icons.add(new Shortcut(APPS.get(i), 20, y));
             y += TILE + 14;
@@ -68,7 +68,7 @@ public final class PeaceScreen extends Screen {
     @Override
     public void extractRenderState(GuiGraphicsExtractor g, int mx, int my, float delta) {
         Theme.fill(g, 0, 0, width, height, Theme.BG);
-        Theme.logo(g, 12, 6, Theme.LOGO_DISPLAY_W, Theme.logoH());
+        Theme.logo(g);
 
         for (Shortcut s : icons) renderTile(g, s, mx, my);
         for (int i = 0; i < windows.size(); i++) windows.get(i).render(g, mx, my, i == windows.size() - 1);
@@ -225,7 +225,7 @@ public final class PeaceScreen extends Screen {
     }
 
     private void openApp(Entry entry) {
-        windows.add(new AppWindow(entry.make().get(), 80 + cascade % 6 * 26, TOP_H + 16 + cascade % 6 * 22));
+        windows.add(new AppWindow(entry.make().get(), 80 + cascade % 6 * 26, topH + 16 + cascade % 6 * 22));
         cascade++;
     }
 
